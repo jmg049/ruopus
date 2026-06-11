@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- CELT low-overlap MDCT (§4.3.7), forward and backward, with the Vorbis power window and short-block interleaving; the inner FFT is isolated behind a seam so the `spectrograms` crate can become an optional accelerated backend while the default build stays dependency-free - validated by TDAC perfect-reconstruction round trips (zero delay, unit gain)
 - CELT band shape decoding (§4.3.4): PVQ shape decode with spreading rotation (`vq`), and the full band loop (`bands`) - recursive theta splits with the step/uniform/triangular PDFs, bit-exact cos/log2tan steering, stereo (theta, intensity, dual, N=2 special case), time/frequency reshaping (Haar + Hadamard), spectral folding with LCG noise fill, and collapse-mask tracking
 - CELT bit allocation (§4.3.3): the full decoder-side `compute_allocation`/`interp_bits2pulses` derivation - quality-vector interpolation, explicit band skipping, intensity/dual-stereo parameters, fine/shape budget split with cap rebalancing - plus the pulse cache (`bits2pulses`/`pulses2bits`) and allocation tables extracted mechanically from the reference sources
 - CELT energy envelope decoding (§4.3.2): coarse energy with time/frequency prediction and the Laplace probability model, budget-starved fallback codes, fine refinement, and final-bit distribution; plus the standard 48 kHz mode tables (band layout, energy means, prediction coefficients)

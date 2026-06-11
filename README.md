@@ -31,7 +31,11 @@ framework.
 - **`forbid(unsafe_code)`**: enforced at the crate level.
 - **`no_std` + `alloc`**: the `std` feature (on by default) only adds
   `std::error::Error` impls and conveniences.
-- **Zero dependencies**: nothing in the dependency tree but this crate.
+- **Zero dependencies**: nothing in the dependency tree but this crate. The
+  MDCT's inner FFT sits behind a seam: an optional feature (planned) routes it
+  through the [`spectrograms`](https://crates.io/crates/spectrograms) crate's
+  fast FFT machinery for acceleration, keeping the default build
+  dependency-free.
 
 ## Layout
 
