@@ -1,7 +1,9 @@
 //! A pure-Rust implementation of the Opus audio codec ([RFC 6716]).
 //!
-//! No FFI, no unsafe code, no dependencies. The crate core is `no_std` +
-//! `alloc`; the default `std` feature only adds [`std::error::Error`] impls.
+//! No FFI, no unsafe code, no dependencies. The framing/entropy core
+//! ([`range`], [`packet`], [`ogg`]) is `no_std` + `alloc`; the signal
+//! processing layers ([`celt`]) currently require the default `std` feature
+//! for float math (a `libm`-backed `no_std` option can follow).
 //!
 //! # Status
 //!
@@ -33,6 +35,7 @@
 
 extern crate alloc;
 
+#[cfg(feature = "std")]
 pub mod celt;
 #[cfg(feature = "experimental-codec")]
 pub mod experimental;

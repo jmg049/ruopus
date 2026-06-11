@@ -20,10 +20,14 @@
 //! | [`energy`] | `quant_bands.c`, §4.3.2 | coarse/fine/finalise energy envelope decoding |
 //! | [`rate`] | `rate.c`, §4.3.3 | the bit allocation: quality interpolation, band skipping, fine/shape split |
 //! | [`tables`] | `static_modes_*.h` | mechanically extracted allocation and pulse-cache tables |
+//! | [`vq`] | `vq.c`, §4.3.4.3 | spreading rotation, PVQ shape decoding, renormalisation |
+//! | [`bands`] | `bands.c`, §4.3.4 | the band loop: theta splits, stereo, folding, collapse masks |
 
+pub mod bands;
 pub mod cwrs;
 pub mod energy;
 pub mod laplace;
 pub mod modes;
 pub mod rate;
 pub mod tables;
+pub mod vq;

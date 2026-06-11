@@ -49,16 +49,26 @@ pub const fn get_pulses(i: i32) -> i32 {
 
 /// The pulse cache row for `(band, lm)`: entry 0 is the highest pseudo-pulse
 /// level, entry `k` the cost of `get_pulses(k)` pulses in 1/8 bits minus one.
-fn cache_row(band: usize, lm: usize) -> &'static [u8] {
-    let idx = CACHE_INDEX[(lm + 1) * NB_EBANDS + band];
+///
+/// `lm` may be -1 (a fully time-split partition), selecting cache row 0.
+fn cache_row(band: usize, lm: i32) -> &'static [u8] {
+    let idx = CACHE_INDEX[(lm + 1) as usize * NB_EBANDS + band];
     debug_assert!(idx >= 0, "single-bin bands have no PVQ cache");
     &CACHE_BITS[idx as usize..]
+}
+
+/// The largest leaf budget the pulse cache can represent for `(band, lm)`,
+/// in 1/8 bits (`cache[cache[0]]` in the reference's split condition).
+#[must_use]
+pub(crate) fn cache_max_bits(band: usize, lm: i32) -> i32 {
+    let cache = cache_row(band, lm);
+    i32::from(cache[usize::from(cache[0])])
 }
 
 /// Largest pseudo-pulse count whose cost fits in `bits` (1/8 bit units),
 /// rounded to the nearest cost (`bits2pulses`).
 #[must_use]
-pub fn bits2pulses(band: usize, lm: usize, bits: i32) -> i32 {
+pub fn bits2pulses(band: usize, lm: i32, bits: i32) -> i32 {
     let cache = cache_row(band, lm);
     let mut lo = 0i32;
     let mut hi = i32::from(cache[0]);
@@ -82,7 +92,7 @@ pub fn bits2pulses(band: usize, lm: usize, bits: i32) -> i32 {
 /// Cost in 1/8 bits of `pulses` pseudo-pulses in `(band, lm)`
 /// (`pulses2bits`).
 #[must_use]
-pub fn pulses2bits(band: usize, lm: usize, pulses: i32) -> i32 {
+pub fn pulses2bits(band: usize, lm: i32, pulses: i32) -> i32 {
     if pulses == 0 {
         0
     } else {
@@ -531,9 +541,9 @@ mod tests {
     fn pulse_cache_round_trips() {
         // For every multi-bin band and LM: pulses2bits and bits2pulses must
         // agree on every representable pseudo-pulse level.
-        for lm in 0..4usize {
+        for lm in 0..4i32 {
             for band in 0..NB_EBANDS {
-                if CACHE_INDEX[(lm + 1) * NB_EBANDS + band] < 0 {
+                if CACHE_INDEX[(lm + 1) as usize * NB_EBANDS + band] < 0 {
                     continue;
                 }
                 let levels = i32::from(cache_row(band, lm)[0]);
