@@ -45,6 +45,16 @@ framework.
 | `celt` | §4.3 | planned (conformant decoder) |
 | `ogg` | RFC 3533 + RFC 7845 | Ogg pages (CRC, lacing, resync), packet reassembly, `OpusHead`/`OpusTags`, granule/pre-skip/end-trim timing, stream reader + writer |
 
+## Conformance
+
+The decoder is being built against the official
+[Opus test vectors](https://opus-codec.org/testvectors/) (RFC 8251 set).
+Fetch them with `tools/fetch-testvectors.sh` (~121 MB, not committed); the
+conformance tests in `tests/conformance.rs` skip cleanly when absent. The
+packet layer currently validates against every packet of all twelve vectors;
+the harness grows per-packet final-range equality and reference-PCM quality
+scoring as the SILK/CELT decoders land.
+
 ## License
 
 MIT, see [LICENSE](LICENSE).
