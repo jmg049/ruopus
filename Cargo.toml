@@ -14,10 +14,15 @@ categories = ["multimedia::audio", "multimedia::encoding", "no-std"]
 exclude = ["/tests/vectors/*", "/target/*"]
 
 [features]
-default = ["std"]
+default = ["std", "experimental-codec"]
 # Implements std::error::Error and enables heap-allocating conveniences.
 # The crate core is no_std + alloc.
 std = []
+# The pre-conformance experimental codec (LPC/SILK-style frame coding, mode
+# detection, hybrid crossover, mid/side) ported from audio_samples. Not an
+# RFC 6716 bitstream; see the `experimental` module docs. Requires `std` for
+# float math.
+experimental-codec = ["std"]
 
 [dependencies]
 # Intentionally empty. The codec core has zero runtime dependencies.

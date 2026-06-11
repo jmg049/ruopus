@@ -11,9 +11,12 @@
 //! |--------|----------|----------|
 //! | [`range`] | §4.1, §5.1 | range decoder + encoder: symbols, binary/ICDF contexts, raw bits, uniform integers, `tell`/`tell_frac` |
 //! | [`packet`] | §3 | TOC byte, frame packing codes 0-3, padding, R1-R7 validation |
+//! | [`lpc`] | analysis groundwork for §4.2/§5.2 | Levinson-Durbin, LP analysis/synthesis filters, pitch estimation, single-tap LTP |
+//! | [`experimental`] | - | the pre-conformance frame codec, mode detection, hybrid crossover, and mid/side helpers ported from `audio_samples` |
 //!
-//! The SILK (§4.2) and CELT (§4.3) decoders are under construction on top of
-//! these layers.
+//! The conformant SILK (§4.2) and CELT (§4.3) decoders are under construction
+//! on top of these layers; the [`experimental`] module documents exactly how
+//! it differs from real Opus in the meantime.
 //!
 //! # Bit-exactness
 //!
@@ -29,6 +32,10 @@
 
 extern crate alloc;
 
+#[cfg(feature = "experimental-codec")]
+pub mod experimental;
+#[cfg(feature = "experimental-codec")]
+pub mod lpc;
 pub mod packet;
 pub mod range;
 

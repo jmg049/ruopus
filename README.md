@@ -39,8 +39,10 @@ framework.
 |--------|----------|--------|
 | `range` | §4.1, §5.1 | Range decoder + encoder, raw bits, uniform ints, `tell`/`tell_frac` |
 | `packet` | §3 | TOC parsing, frame packing codes 0-3, padding, R1-R7 validation |
-| `silk` | §4.2 | planned |
-| `celt` | §4.3 | planned |
+| `lpc` | §4.2/§5.2 groundwork | Levinson-Durbin, LP analysis/synthesis, pitch estimation, LTP |
+| `experimental` | - | pre-conformance frame codec, mode detection, crossover, mid/side (feature `experimental-codec`) |
+| `silk` | §4.2 | planned (conformant decoder) |
+| `celt` | §4.3 | planned (conformant decoder) |
 | `ogg` | RFC 7845 | planned (likely behind a feature flag) |
 
 ## License
