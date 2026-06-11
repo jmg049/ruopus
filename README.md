@@ -41,7 +41,7 @@ framework.
 | `packet` | §3 | TOC parsing, frame packing codes 0-3, padding, R1-R7 validation |
 | `lpc` | §4.2/§5.2 groundwork | Levinson-Durbin, LP analysis/synthesis, pitch estimation, LTP |
 | `experimental` | - | pre-conformance frame codec, mode detection, crossover, mid/side (feature `experimental-codec`) |
-| `celt` | §4.3 | in progress: Laplace energy coder + PVQ/CWRS enumeration done; allocation, bands, MDCT next |
+| `celt` | §4.3 | in progress: Laplace coder, PVQ/CWRS enumeration, mode tables, energy envelope decode done; bit allocation, bands, MDCT next |
 | `silk` | §4.2 | planned (conformant decoder) |
 | `ogg` | RFC 3533 + RFC 7845 | Ogg pages (CRC, lacing, resync), packet reassembly, `OpusHead`/`OpusTags`, granule/pre-skip/end-trim timing, stream reader + writer |
 

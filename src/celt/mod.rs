@@ -16,6 +16,10 @@
 //! |--------|-----------|----------|
 //! | [`laplace`] | `laplace.c`, §4.3.2.1 | the Laplace coder for coarse energy deltas |
 //! | [`cwrs`] | `cwrs.c`, §4.3.4.2 | PVQ codeword enumeration (pulse vectors ↔ indices) |
+//! | [`modes`] | `modes.c`, Table 55 | static data of the standard 48 kHz mode |
+//! | [`energy`] | `quant_bands.c`, §4.3.2 | coarse/fine/finalise energy envelope decoding |
 
 pub mod cwrs;
+pub mod energy;
 pub mod laplace;
+pub mod modes;
