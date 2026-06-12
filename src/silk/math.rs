@@ -218,6 +218,24 @@ pub(crate) const fn div32_var_q(a32: i32, b32: i32, q_res: i32) -> i32 {
     }
 }
 
+/// `silk_SMULL`: full 64-bit product.
+#[inline]
+pub(crate) const fn smull(a: i32, b: i32) -> i64 {
+    a as i64 * b as i64
+}
+
+/// `silk_RSHIFT_ROUND64`: 64-bit right shift with round-to-nearest.
+#[inline]
+pub(crate) const fn rshift_round64(a: i64, shift: i32) -> i64 {
+    ((a >> (shift - 1)) + 1) >> 1
+}
+
+/// `silk_MUL`: 32-bit multiply (the reference asserts no overflow).
+#[inline]
+pub(crate) const fn mul(a: i32, b: i32) -> i32 {
+    a.wrapping_mul(b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -22,6 +22,8 @@
 
 pub(crate) mod gains;
 pub(crate) mod indices;
+pub(crate) mod lpc;
 pub(crate) mod math;
+pub(crate) mod nlsf;
 pub(crate) mod pulses;
 pub mod tables;
