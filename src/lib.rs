@@ -44,6 +44,7 @@ pub mod lpc;
 pub mod ogg;
 pub mod packet;
 pub mod range;
+pub mod silk;
 
 pub use packet::{Bandwidth, FrameSize, Mode, Packet, PacketError, Toc};
 pub use range::{RangeDecoder, RangeEncoder, RangeEncoderError};
