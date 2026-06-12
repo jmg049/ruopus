@@ -52,6 +52,11 @@ pub struct OpusDecoder {
     stream_channels: usize,
     prev_mode: Option<Mode>,
     prev_redundancy: bool,
+    /// The CELT end band of the previous frame (for concealment).
+    prev_end: usize,
+    /// Frame duration of the last good packet (`st->frame_size`), capping
+    /// each concealment chunk.
+    last_frame_size: usize,
     /// The range state of the most recent packet
     /// (`OPUS_GET_FINAL_RANGE`): main coder XOR redundant coder.
     final_range: u32,
@@ -73,6 +78,8 @@ impl OpusDecoder {
             stream_channels: channels,
             prev_mode: None,
             prev_redundancy: false,
+            prev_end: 21,
+            last_frame_size: 120,
             final_range: 0,
         }
     }
@@ -121,6 +128,44 @@ impl OpusDecoder {
             .collect())
     }
 
+    /// Conceals one lost packet of `frame_size` samples per channel
+    /// (10-60 ms), like `opus_decode(NULL)`. CELT concealment extrapolates
+    /// the last pitch period; SILK concealment is not yet ported, so
+    /// frames following SILK or hybrid packets fade to silence. The final
+    /// range of a concealed packet is 0.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `frame_size` does not correspond to 2.5-60 ms at 48 kHz.
+    #[must_use]
+    pub fn decode_lost(&mut self, frame_size: usize) -> Vec<f32> {
+        let channels = self.channels;
+        let mut out = vec![0.0f32; frame_size * channels];
+        if self.prev_mode == Some(Mode::CeltOnly) {
+            let mut done = 0usize;
+            while done < frame_size {
+                // Each chunk is capped by the last good packet's frame
+                // duration, then quantised to a runnable size
+                // (opus_decode_frame's PLC sizing).
+                let mut n = (frame_size - done).min(self.last_frame_size);
+                if n > F20 {
+                    n = F20;
+                } else if n < F20 {
+                    if n > 480 {
+                        n = 480;
+                    } else if n > F5 && n < 480 {
+                        n = F5;
+                    }
+                }
+                let pcm = self.celt.decode_lost(n, 0, self.prev_end);
+                out[done * channels..(done + n) * channels].copy_from_slice(&pcm);
+                done += n;
+            }
+        }
+        self.final_range = 0;
+        out
+    }
+
     /// `opus_decode_frame`, normal path (no FEC, no loss).
     #[allow(clippy::too_many_lines, reason = "mirrors the reference sequence")]
     fn decode_frame(&mut self, data: &[u8], mode: Mode, bandwidth: Bandwidth, frame_size: usize) -> Vec<f32> {
@@ -134,9 +179,10 @@ impl OpusDecoder {
             (mode == Mode::CeltOnly && prev != Mode::CeltOnly && !self.prev_redundancy)
                 || (mode != Mode::CeltOnly && prev == Mode::CeltOnly)
         });
-        // The reference synthesizes 5 ms of concealment from the previous
-        // mode here; PLC is not ported, so the fade source is silence.
-        let pcm_transition = vec![0.0f32; F5 * channels];
+        // Transition audio comes from concealment in the previous mode.
+        // CELT concealment is ported; SILK/hybrid concealment still fades
+        // from silence.
+        let mut pcm_transition = vec![0.0f32; F5 * channels];
 
         let mut dec = RangeDecoder::new(data);
 
@@ -203,6 +249,11 @@ impl OpusDecoder {
         // Redundancy supersedes the transition fade - the redundant frame
         // provides the smoothing (`if (redundancy) transition = 0`).
         let transition = transition && !redundancy;
+        if transition && mode != Mode::CeltOnly && self.prev_mode == Some(Mode::CeltOnly) {
+            let n = F5.min(frame_size);
+            let pcm = self.celt.decode_lost(n, 0, self.prev_end);
+            pcm_transition[..n * channels].copy_from_slice(&pcm);
+        }
         let start_band = if mode == Mode::CeltOnly { 0 } else { 17 };
 
         let celt_end = end_band(bandwidth);
@@ -316,6 +367,8 @@ impl OpusDecoder {
 
         self.final_range = dec.range_size() ^ redundant_rng;
         self.prev_mode = Some(mode);
+        self.prev_end = celt_end;
+        self.last_frame_size = frame_size;
         self.prev_redundancy = redundancy && !celt_to_silk;
         pcm
     }

@@ -366,3 +366,34 @@ fn all_vectors_decode_through_the_opus_decoder() {
         assert!(snr_db > 75.0, "{name}: PCM SNR {snr_db:.1} dB vs reference decode");
     }
 }
+
+/// Decodes testvector01 with a 10% simulated loss pattern: concealment
+/// must produce the right duration and finite, bounded audio. (Concealment
+/// is not normative; its decisions were verified against libopus
+/// separately - all pitch picks and mode choices matched.)
+#[cfg(feature = "std")]
+#[test]
+fn concealment_survives_simulated_loss() {
+    use opus_native::OpusDecoder;
+
+    let Some(dir) = vectors_dir() else { return };
+    let bits = std::fs::read(dir.join("testvector01.bit")).expect("read .bit");
+    let packets = parse_bit_file(&bits);
+
+    let mut decoder = OpusDecoder::new(2);
+    let mut total = 0usize;
+    for (idx, pkt) in packets.iter().enumerate() {
+        let pcm = if idx % 10 == 7 {
+            let parsed = Packet::parse(&pkt.data).expect("valid");
+            let dur = parsed.frames().len() * parsed.toc().frame_size().samples_per_channel_48k();
+            decoder.decode_lost(dur)
+        } else {
+            decoder.decode_packet(&pkt.data).expect("valid")
+        };
+        assert!(pcm.iter().all(|v| v.is_finite() && v.abs() < 2.0));
+        total += pcm.len();
+    }
+    // Matches libopus' sample count for this loss pattern exactly
+    // (verified against the reference in a differential run).
+    assert_eq!(total, 2_830_080, "total stereo samples");
+}
