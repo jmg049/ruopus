@@ -57,7 +57,7 @@ const TAPSET_ICDF: [u8; 3] = [2, 1, 0];
 
 /// Time/frequency resolution change table (`tf_select_table`, celt.c),
 /// indexed `[LM][4*isTransient + 2*tf_select + per_band_flag]`.
-const TF_SELECT_TABLE: [[i32; 8]; 4] = [
+pub(super) const TF_SELECT_TABLE: [[i32; 8]; 4] = [
     [0, -1, 0, -1, 0, -1, 0, -1],
     [0, -1, 0, -2, 1, 0, 1, -1],
     [0, -2, 0, -3, 2, 0, 1, -1],

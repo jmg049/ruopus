@@ -648,8 +648,15 @@ fn celt_encoder_round_trips_through_the_decoder() {
         let pcm: Vec<f32> = (0..960)
             .map(|i| {
                 let t = (f * 960 + i) as f32 / 48_000.0;
+                // Percussive bursts exercise the transient/short-block path.
+                let burst = if f % 7 == 3 && (480..600).contains(&i) {
+                    0.4 * (2.0 * core::f32::consts::PI * 3100.0 * t).sin() * (-(i as f32 - 480.0) / 30.0).exp()
+                } else {
+                    0.0
+                };
                 0.5 * (2.0 * core::f32::consts::PI * 440.0 * t).sin()
                     + 0.2 * (2.0 * core::f32::consts::PI * 1800.0 * t).sin()
+                    + burst
             })
             .collect();
         input.extend_from_slice(&pcm);
@@ -694,13 +701,21 @@ fn celt_stereo_encoder_round_trips_through_the_decoder() {
         let mut pcm = Vec::with_capacity(960 * 2);
         for i in 0..960 {
             let t = (f * 960 + i) as f32 / 48_000.0;
+            // Percussive bursts exercise the transient/short-block path.
+            let burst = if f % 7 == 3 && (480..600).contains(&i) {
+                0.4 * (2.0 * core::f32::consts::PI * 3100.0 * t).sin() * (-(i as f32 - 480.0) / 30.0).exp()
+            } else {
+                0.0
+            };
             pcm.push(
                 0.5 * (2.0 * core::f32::consts::PI * 440.0 * t).sin()
-                    + 0.2 * (2.0 * core::f32::consts::PI * 1800.0 * t).sin(),
+                    + 0.2 * (2.0 * core::f32::consts::PI * 1800.0 * t).sin()
+                    + burst,
             );
             pcm.push(
                 0.4 * (2.0 * core::f32::consts::PI * 660.0 * t).sin()
-                    + 0.2 * (2.0 * core::f32::consts::PI * 2500.0 * t + 0.7).sin(),
+                    + 0.2 * (2.0 * core::f32::consts::PI * 2500.0 * t + 0.7).sin()
+                    + burst,
             );
         }
         input.extend_from_slice(&pcm);

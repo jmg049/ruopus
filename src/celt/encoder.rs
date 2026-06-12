@@ -1,13 +1,14 @@
 //! A CELT encoder (RFC 6716 §5.3; normative `celt_encoder.c`,
-//! `quant_bands.c` encoder paths): **mono or stereo, long blocks**.
+//! `quant_bands.c` encoder paths): mono or stereo, with transient
+//! detection and short blocks.
 //!
-//! Encoder *decisions* are deliberately conservative - no transients, no
-//! post-filter, no dynamic allocation boosts, default trim, normal
-//! spreading, full stereo (no intensity collapse, no dual stereo) - every
-//! one of which is a legal choice, so the bitstream is fully conformant;
-//! quality-improving analysis lands incrementally. The bit-exact machinery
-//! (energy quantisation, allocation, theta splits, PVQ) mirrors the
-//! decoder's exactly.
+//! Encoder *decisions* are deliberately conservative - transient detection
+//! but per-band tf flags all zero, no post-filter, no dynamic allocation
+//! boosts, default trim, normal spreading, full stereo (no intensity
+//! collapse, no dual stereo) - every one of which is a legal choice, so
+//! the bitstream is fully conformant; quality-improving analysis lands
+//! incrementally. The bit-exact machinery (energy quantisation,
+//! allocation, theta splits, PVQ) mirrors the decoder's exactly.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -15,6 +16,7 @@ use alloc::vec::Vec;
 use crate::range::RangeEncoder;
 
 use super::bands::encode::quant_all_bands_enc;
+use super::decoder::TF_SELECT_TABLE;
 use super::energy::EnergyState;
 use super::laplace::ec_laplace_encode;
 use super::mdct::MdctLookup;
@@ -47,6 +49,11 @@ pub struct CeltEncoder {
     energy: EnergyState,
     /// Frames encoded (the first is coded intra).
     frames: u64,
+    /// Consecutive transient frames (`consec_transient`), steering the
+    /// anti-collapse decision.
+    consec_transient: u32,
+    /// Whether the last frame was coded with short blocks (diagnostic).
+    last_transient: bool,
     /// Range state of the last encoded frame (the bit-exactness oracle).
     final_range: u32,
     mdct: MdctLookup,
@@ -79,6 +86,8 @@ impl CeltEncoder {
             in_mem: [[0.0; OVERLAP]; 2],
             energy: EnergyState::default(),
             frames: 0,
+            consec_transient: 0,
+            last_transient: false,
             final_range: 0,
             mdct: MdctLookup::new(1920),
         }
@@ -105,14 +114,12 @@ impl CeltEncoder {
         let mut enc = RangeEncoder::new(nb_bytes);
         let total_bits = (nb_bytes * 8) as u32;
 
-        // Per channel: pre-emphasis (signal scale 32768), forward MDCT,
-        // band energies, and unit-norm band shapes. `x` is planar:
-        // channel 0 first, then channel 1.
-        let mut x = vec![0.0f32; n * channels];
-        let mut band_e = [[0.0f32; NB_EBANDS]; 2];
-        let mut band_log_e = [[0.0f32; NB_EBANDS]; 2];
+        // Per channel: pre-emphasis into the signal domain (scale 32768),
+        // including the previous frame's overlap. `inputs` is planar.
+        let in_len = OVERLAP + n;
+        let mut inputs = vec![0.0f32; in_len * channels];
         for c in 0..channels {
-            let mut input = vec![0.0f32; OVERLAP + n];
+            let input = &mut inputs[c * in_len..(c + 1) * in_len];
             input[..OVERLAP].copy_from_slice(&self.in_mem[c]);
             let mut mem = self.preemph_mem[c];
             for (dst, &s) in input[OVERLAP..].iter_mut().zip(pcm.iter().skip(c).step_by(channels)) {
@@ -122,9 +129,35 @@ impl CeltEncoder {
             }
             self.preemph_mem[c] = mem;
             self.in_mem[c].copy_from_slice(&input[n..n + OVERLAP]);
+        }
 
+        // Transient decision (`transient_analysis`); the flag needs 3 bits.
+        let is_transient = lm > 0 && enc.tell() + 3 <= total_bits && transient_analysis(&inputs, in_len, channels);
+
+        // Forward MDCT(s) per channel, then band energies (log domain
+        // relative to eMeans) and unit-norm band shapes. `x` is planar.
+        let mut x = vec![0.0f32; n * channels];
+        let mut band_e = [[0.0f32; NB_EBANDS]; 2];
+        let mut band_log_e = [[0.0f32; NB_EBANDS]; 2];
+        for c in 0..channels {
+            let input = &inputs[c * in_len..(c + 1) * in_len];
             let mut freq = vec![0.0f32; n];
-            self.mdct.forward(&input, &mut freq, &WINDOW120, OVERLAP, 3 - lm, 1);
+            if is_transient {
+                // `m` short MDCTs, interleaved into `freq`.
+                let sub = n / m;
+                for b in 0..m {
+                    self.mdct.forward(
+                        &input[b * sub..b * sub + sub + OVERLAP],
+                        &mut freq[b..],
+                        &WINDOW120,
+                        OVERLAP,
+                        3,
+                        m,
+                    );
+                }
+            } else {
+                self.mdct.forward(input, &mut freq, &WINDOW120, OVERLAP, 3 - lm, 1);
+            }
 
             let xc = &mut x[c * n..(c + 1) * n];
             for i in 0..end {
@@ -152,9 +185,9 @@ impl CeltEncoder {
         if start == 0 && enc.tell() + 16 <= total_bits {
             enc.encode_bit_logp(false, 1);
         }
-        // No transient.
+        // Transient flag.
         if lm > 0 && enc.tell() + 3 <= total_bits {
-            enc.encode_bit_logp(false, 3);
+            enc.encode_bit_logp(is_transient, 3);
         }
         // Intra only on the first frame.
         let intra = self.frames == 0;
@@ -166,11 +199,13 @@ impl CeltEncoder {
         let mut error = [[0.0f32; NB_EBANDS]; 2];
         self.quant_coarse_energy(&mut enc, start, end, &band_log_e, &mut error, intra, lm, total_bits);
 
-        // Time-frequency: no changes (`tf_encode` with all-zero flags).
-        {
+        // Time-frequency: no per-band changes (`tf_encode` with all-zero
+        // flags and tf_select 0); the effective per-band tf_change still
+        // comes from the table - 3 for a default transient frame.
+        let tf_res = {
             let mut budget = total_bits;
             let mut tell = enc.tell();
-            let mut logp = 4u32; // non-transient: 4 then 5
+            let mut logp: u32 = if is_transient { 2 } else { 4 };
             let tf_select_rsv = lm > 0 && tell + logp < budget;
             budget -= u32::from(tf_select_rsv);
             for _ in start..end {
@@ -178,11 +213,20 @@ impl CeltEncoder {
                     enc.encode_bit_logp(false, logp);
                     tell = enc.tell();
                 }
-                logp = 5;
+                logp = if is_transient { 4 } else { 5 };
             }
-            // tf_select need not be coded when both candidates agree
-            // (they do for all-zero flags).
-        }
+            // tf_select is only coded when the two candidate tables differ
+            // for the coded flags (tf_changed == 0 here).
+            let base = 4 * usize::from(is_transient);
+            if tf_select_rsv && TF_SELECT_TABLE[lm][base] != TF_SELECT_TABLE[lm][base + 2] {
+                enc.encode_bit_logp(false, 1);
+            }
+            let mut tf_res = [0i32; NB_EBANDS];
+            for r in tf_res.iter_mut().take(end).skip(start) {
+                *r = TF_SELECT_TABLE[lm][base];
+            }
+            tf_res
+        };
 
         // Spreading: normal.
         if enc.tell() + 4 <= total_bits {
@@ -214,7 +258,13 @@ impl CeltEncoder {
         // decisions are conservative: intensity at `end` (full stereo in
         // every band; the allocator clamps it to the coded bands) and no
         // dual stereo.
-        let bits = (((nb_bytes * 8) << 3) as i32) - enc.tell_frac() as i32 - 1;
+        let mut bits = (((nb_bytes * 8) << 3) as i32) - enc.tell_frac() as i32 - 1;
+        let anti_collapse_rsv = if is_transient && lm >= 2 && bits >= ((lm as i32 + 2) << 3) {
+            1 << 3
+        } else {
+            0
+        };
+        bits -= anti_collapse_rsv;
         let offsets = [0i32; NB_EBANDS];
         let alloc = compute_allocation(
             &mut AllocEc::Enc {
@@ -237,7 +287,7 @@ impl CeltEncoder {
         self.quant_fine_energy(&mut enc, start, end, &mut error, &alloc.fine_quant);
 
         // Band shapes.
-        let total = ((nb_bytes * 8) << 3) as i32;
+        let total = ((nb_bytes * 8) << 3) as i32 - anti_collapse_rsv;
         let (xs, ys) = x.split_at_mut(n);
         quant_all_bands_enc(
             &mut enc,
@@ -246,15 +296,22 @@ impl CeltEncoder {
             xs,
             if channels == 2 { Some(ys) } else { None },
             &alloc.shape_bits,
+            is_transient,
             Spread::Normal,
             alloc.dual_stereo,
             alloc.intensity,
+            &tf_res,
             total,
             alloc.balance,
             lm,
             alloc.coded_bands,
             &band_e,
         );
+
+        // Anti-collapse: on unless this is a long transient run.
+        if anti_collapse_rsv > 0 {
+            enc.encode_raw_bits(u32::from(self.consec_transient < 2), 1);
+        }
 
         // Finalise the leftover bits into extra fine energy.
         let bits_left = nb_bytes as i32 * 8 - enc.tell() as i32;
@@ -268,6 +325,12 @@ impl CeltEncoder {
             bits_left,
         );
 
+        if is_transient {
+            self.consec_transient += 1;
+        } else {
+            self.consec_transient = 0;
+        }
+        self.last_transient = is_transient;
         self.frames += 1;
         self.final_range = enc.range_size();
         enc.finalize().expect("budget enforced by construction")
@@ -278,6 +341,13 @@ impl CeltEncoder {
     #[must_use]
     pub const fn final_range(&self) -> u32 {
         self.final_range
+    }
+
+    /// Whether the last frame was detected as a transient and coded with
+    /// short blocks.
+    #[must_use]
+    pub const fn last_transient(&self) -> bool {
+        self.last_transient
     }
 
     /// `quant_coarse_energy` (float build): time/frequency-predicted,
@@ -423,4 +493,77 @@ impl CeltEncoder {
             self.energy.old_ebands[1] = self.energy.old_ebands[0];
         }
     }
+}
+
+/// `transient_analysis` (float build): high-pass the input, apply forward
+/// (6.7 dB/ms) and backward (13.9 dB/ms) masking decays, and compare the
+/// frame energy against the harmonic mean of the masked energy - a
+/// bitrate-normalised temporal noise-to-mask ratio. `inputs` is the planar
+/// per-channel pre-emphasised signal including the overlap (`len` samples
+/// per channel).
+fn transient_analysis(inputs: &[f32], len: usize, channels: usize) -> bool {
+    /// `inv_table`: 6*64/x, trained on real data to minimise average error.
+    const INV_TABLE: [u8; 128] = [
+        255, 255, 156, 110, 86, 70, 59, 51, 45, 40, 37, 33, 31, 28, 26, 25, 23, 22, 21, 20, 19, 18, 17, 16, 16, 15, 15,
+        14, 13, 13, 12, 12, 12, 12, 11, 11, 11, 10, 10, 10, 9, 9, 9, 9, 9, 9, 8, 8, 8, 8, 8, 7, 7, 7, 7, 7, 7, 6, 6, 6,
+        6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+        4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2,
+    ];
+    const EPSILON: f32 = 1e-15;
+    // Forward masking: 6.7 dB/ms.
+    const FORWARD_DECAY: f32 = 0.0625;
+
+    let len2 = len / 2;
+    let mut mask_metric = 0i32;
+    let mut tmp = vec![0.0f32; len];
+    for c in 0..channels {
+        let input = &inputs[c * len..(c + 1) * len];
+
+        // High-pass filter: (1 - 2z^-1 + z^-2) / (1 - z^-1 + 0.5 z^-2).
+        let (mut mem0, mut mem1) = (0.0f32, 0.0f32);
+        for (t, &x) in tmp.iter_mut().zip(input.iter()) {
+            let y = mem0 + x;
+            let mem00 = mem0;
+            mem0 = mem0 - x + 0.5 * mem1;
+            mem1 = x - mem00;
+            *t = y;
+        }
+        // The first few samples are bad: the memory is not propagated.
+        tmp[..12].fill(0.0);
+
+        // Forward pass for the post-echo threshold, grouping by two.
+        let mut mean = 0.0f32;
+        let mut mem = 0.0f32;
+        for i in 0..len2 {
+            let x2 = tmp[2 * i] * tmp[2 * i] + tmp[2 * i + 1] * tmp[2 * i + 1];
+            mean += x2;
+            mem = x2 + (1.0 - FORWARD_DECAY) * mem;
+            tmp[i] = FORWARD_DECAY * mem;
+        }
+
+        // Backward pass for the pre-echo threshold.
+        let mut mem = 0.0f32;
+        let mut max_e = 0.0f32;
+        for i in (0..len2).rev() {
+            mem = tmp[i] + 0.875 * mem;
+            tmp[i] = 0.125 * mem;
+            max_e = max_e.max(0.125 * mem);
+        }
+
+        // Frame energy: the geometric mean of the energy and half the max.
+        let mean = (mean * max_e * 0.5 * len2 as f32).sqrt();
+        let norm = len2 as f32 / (EPSILON + mean);
+        // Harmonic mean over 1/4 of the samples, away from the boundaries.
+        let mut unmask = 0i32;
+        let mut i = 12;
+        while i + 5 < len2 {
+            let id = (64.0 * norm * (tmp[i] + EPSILON)).floor().clamp(0.0, 127.0) as usize;
+            unmask += i32::from(INV_TABLE[id]);
+            i += 4;
+        }
+        // Normalise for the 1/4 sampling and the factor 6 in the table.
+        let unmask = 64 * unmask * 4 / (6 * (len2 as i32 - 17));
+        mask_metric = mask_metric.max(unmask);
+    }
+    mask_metric > 200
 }

@@ -1222,7 +1222,7 @@ pub(crate) mod encode {
     use super::super::modes::{EBANDS, LOG_N, NB_EBANDS};
     use super::super::rate::{BITRES, bits2pulses, pulses2bits};
     use super::super::vq::{Spread, alg_quant, stereo_itheta};
-    use super::{QTHETA_OFFSET, bitexact_cos, bitexact_log2tan, compute_qn, frac_mul16};
+    use super::{QTHETA_OFFSET, bitexact_cos, bitexact_log2tan, compute_qn, deinterleave_hadamard, frac_mul16, haar1};
 
     /// `stereo_split`: L/R → normalised mid/side in place.
     fn stereo_split(x: &mut [f32], y: &mut [f32]) {
@@ -1338,21 +1338,27 @@ pub(crate) mod encode {
         (itheta, inv, delta, qalloc)
     }
 
-    /// `quant_band_stereo`, encoder direction (long blocks, no RDO).
+    /// `quant_band_stereo`, encoder direction (no RDO).
     #[allow(clippy::too_many_arguments, reason = "mirrors the reference")]
     fn quant_band_stereo_enc(
         enc: &mut RangeEncoder,
         x: &mut [f32],
         y: &mut [f32],
         mut b: i32,
+        big_b: usize,
         i: usize,
         lm: i32,
         spread: Spread,
         intensity: usize,
+        tf_change: i32,
         remaining_bits: &mut i32,
         band_e: &[[f32; NB_EBANDS]; 2],
     ) {
         let n = x.len();
+        if n == 1 {
+            quant_band_n1_enc(enc, x, Some(y), remaining_bits);
+            return;
+        }
         let (itheta, _inv, delta, qalloc) =
             compute_theta_stereo_enc(enc, x, y, i, &mut b, lm, intensity, *remaining_bits, band_e);
 
@@ -1367,28 +1373,28 @@ pub(crate) mod encode {
                 let sign = x2[0] * y2[1] - x2[1] * y2[0] < 0.0;
                 enc.encode_raw_bits(u32::from(sign), 1);
             }
-            quant_partition_enc(enc, x2, mbits, i, lm, spread, remaining_bits);
+            quant_band_enc(enc, x2, mbits, big_b, i, lm, spread, tf_change, remaining_bits);
         } else {
             let mbits = 0.max(b.min((b - delta) / 2));
             let sbits = b - mbits;
             *remaining_bits -= qalloc;
             let rebalance = *remaining_bits;
             if mbits >= sbits {
-                quant_partition_enc(enc, x, mbits, i, lm, spread, remaining_bits);
+                quant_band_enc(enc, x, mbits, big_b, i, lm, spread, tf_change, remaining_bits);
                 let rebalance = mbits - (rebalance - *remaining_bits);
                 let mut sbits = sbits;
                 if rebalance > 3 << BITRES && itheta != 0 {
                     sbits += rebalance - (3 << BITRES);
                 }
-                quant_partition_enc(enc, y, sbits, i, lm, spread, remaining_bits);
+                quant_band_enc(enc, y, sbits, big_b, i, lm, spread, tf_change, remaining_bits);
             } else {
-                quant_partition_enc(enc, y, sbits, i, lm, spread, remaining_bits);
+                quant_band_enc(enc, y, sbits, big_b, i, lm, spread, tf_change, remaining_bits);
                 let rebalance = sbits - (rebalance - *remaining_bits);
                 let mut mbits = mbits;
                 if rebalance > 3 << BITRES && itheta != 16384 {
                     mbits += rebalance - (3 << BITRES);
                 }
-                quant_partition_enc(enc, x, mbits, i, lm, spread, remaining_bits);
+                quant_band_enc(enc, x, mbits, big_b, i, lm, spread, tf_change, remaining_bits);
             }
         }
     }
@@ -1448,22 +1454,38 @@ pub(crate) mod encode {
         (itheta, delta, qalloc)
     }
 
-    /// `quant_partition`, encoder direction (mono, `B == 1`).
+    /// `quant_partition`, encoder direction.
+    #[allow(clippy::too_many_arguments, reason = "mirrors the reference")]
     fn quant_partition_enc(
         enc: &mut RangeEncoder,
         x: &mut [f32],
         mut b: i32,
+        big_b: usize,
         i: usize,
         lm: i32,
         spread: Spread,
         remaining_bits: &mut i32,
     ) {
         let n = x.len();
+        let b0 = big_b;
         if lm != -1 && b > super::super::rate::cache_max_bits(i, lm) + 12 && n > 2 {
             let half = n >> 1;
             let lm = lm - 1;
+            let big_b = (big_b + 1) >> 1;
             let (xs, ys) = x.split_at_mut(half);
-            let (itheta, delta, qalloc) = compute_theta_enc(enc, xs, ys, i, &mut b, 1, lm);
+            let (itheta, mut delta, qalloc) = compute_theta_enc(enc, xs, ys, i, &mut b, b0, lm);
+
+            // Give more bits to low-energy MDCTs than they would otherwise
+            // deserve.
+            if b0 > 1 && (itheta & 0x3fff) != 0 {
+                if itheta > 8192 {
+                    // Rough approximation for pre-echo masking.
+                    delta -= delta >> (4 - lm);
+                } else {
+                    // A forward-masking slope of 1.5 dB per 10 ms.
+                    delta = 0.min(delta + ((half as i32) << BITRES >> (5 - lm)));
+                }
+            }
 
             let mbits = 0.max(b.min((b - delta) / 2));
             let sbits = b - mbits;
@@ -1471,21 +1493,21 @@ pub(crate) mod encode {
 
             let rebalance = *remaining_bits;
             if mbits >= sbits {
-                quant_partition_enc(enc, xs, mbits, i, lm, spread, remaining_bits);
+                quant_partition_enc(enc, xs, mbits, big_b, i, lm, spread, remaining_bits);
                 let rebalance = mbits - (rebalance - *remaining_bits);
                 let mut sbits = sbits;
                 if rebalance > 3 << BITRES && itheta != 0 {
                     sbits += rebalance - (3 << BITRES);
                 }
-                quant_partition_enc(enc, ys, sbits, i, lm, spread, remaining_bits);
+                quant_partition_enc(enc, ys, sbits, big_b, i, lm, spread, remaining_bits);
             } else {
-                quant_partition_enc(enc, ys, sbits, i, lm, spread, remaining_bits);
+                quant_partition_enc(enc, ys, sbits, big_b, i, lm, spread, remaining_bits);
                 let rebalance = sbits - (rebalance - *remaining_bits);
                 let mut mbits = mbits;
                 if rebalance > 3 << BITRES && itheta != 16384 {
                     mbits += rebalance - (3 << BITRES);
                 }
-                quant_partition_enc(enc, xs, mbits, i, lm, spread, remaining_bits);
+                quant_partition_enc(enc, xs, mbits, big_b, i, lm, spread, remaining_bits);
             }
         } else {
             // Leaf: one PVQ codeword.
@@ -1500,9 +1522,58 @@ pub(crate) mod encode {
             }
             if q != 0 {
                 let k = super::super::rate::get_pulses(q) as usize;
-                let _ = alg_quant(enc, x, k, spread, 1);
+                let _ = alg_quant(enc, x, k, spread, big_b);
             }
         }
+    }
+
+    /// `quant_band`, encoder direction: the time/frequency reshaping
+    /// (recombine Haar steps for `tf_change > 0`, time splits for
+    /// `tf_change < 0`, Hadamard reordering for short blocks) applied
+    /// forward before the partition recursion. No resynthesis.
+    #[allow(clippy::too_many_arguments, reason = "mirrors the reference")]
+    fn quant_band_enc(
+        enc: &mut RangeEncoder,
+        x: &mut [f32],
+        b: i32,
+        big_b: usize,
+        i: usize,
+        lm: i32,
+        spread: Spread,
+        tf_change: i32,
+        remaining_bits: &mut i32,
+    ) {
+        let n = x.len();
+        if n == 1 {
+            quant_band_n1_enc(enc, x, None, remaining_bits);
+            return;
+        }
+        let long_blocks = big_b == 1;
+        let mut n_b = n / big_b;
+        let recombine = tf_change.max(0) as usize;
+
+        // Band recombining to increase frequency resolution.
+        for k in 0..recombine {
+            haar1(x, n >> k, 1 << k);
+        }
+        let mut big_b = big_b >> recombine;
+        n_b <<= recombine;
+
+        // Increasing the time resolution.
+        let mut tf_change = tf_change;
+        while (n_b & 1) == 0 && tf_change < 0 {
+            haar1(x, n_b, big_b);
+            big_b <<= 1;
+            n_b >>= 1;
+            tf_change += 1;
+        }
+
+        // Reorganize the samples in time order instead of frequency order.
+        if big_b > 1 {
+            deinterleave_hadamard(x, n_b >> recombine, big_b << recombine, long_blocks);
+        }
+
+        quant_partition_enc(enc, x, b, big_b, i, lm, spread, remaining_bits);
     }
 
     /// Single-sample band, encoder direction (`quant_band_n1`): one sign
@@ -1529,9 +1600,11 @@ pub(crate) mod encode {
         x: &mut [f32],
         mut y: Option<&mut [f32]>,
         shape_bits: &[i32; NB_EBANDS],
+        short_blocks: bool,
         spread: Spread,
         dual_stereo: bool,
         intensity: usize,
+        tf_res: &[i32; NB_EBANDS],
         total_bits: i32,
         mut balance: i32,
         lm: usize,
@@ -1539,6 +1612,7 @@ pub(crate) mod encode {
         band_e: &[[f32; NB_EBANDS]; 2],
     ) {
         let m = 1usize << lm;
+        let big_b = if short_blocks { m } else { 1 };
         let mut dual_stereo = dual_stereo;
         for i in start..end {
             let tell = enc.tell_frac() as i32;
@@ -1557,35 +1631,53 @@ pub(crate) mod encode {
                 // merges its folding history here; the encoder keeps none).
                 dual_stereo = false;
             }
+            let tf_change = tf_res[i];
             let band_start = m * EBANDS[i] as usize;
             let band_end = m * EBANDS[i + 1] as usize;
-            let n = band_end - band_start;
             let xb = &mut x[band_start..band_end];
             if let Some(yall) = y.as_mut() {
                 let yb = &mut yall[band_start..band_end];
-                if n == 1 {
-                    quant_band_n1_enc(enc, xb, Some(yb), &mut remaining_bits);
-                } else if dual_stereo {
-                    quant_partition_enc(enc, xb, b / 2, i, lm as i32, spread, &mut remaining_bits);
-                    quant_partition_enc(enc, yb, b / 2, i, lm as i32, spread, &mut remaining_bits);
+                if dual_stereo {
+                    quant_band_enc(
+                        enc,
+                        xb,
+                        b / 2,
+                        big_b,
+                        i,
+                        lm as i32,
+                        spread,
+                        tf_change,
+                        &mut remaining_bits,
+                    );
+                    quant_band_enc(
+                        enc,
+                        yb,
+                        b / 2,
+                        big_b,
+                        i,
+                        lm as i32,
+                        spread,
+                        tf_change,
+                        &mut remaining_bits,
+                    );
                 } else {
                     quant_band_stereo_enc(
                         enc,
                         xb,
                         yb,
                         b,
+                        big_b,
                         i,
                         lm as i32,
                         spread,
                         intensity,
+                        tf_change,
                         &mut remaining_bits,
                         band_e,
                     );
                 }
-            } else if n == 1 {
-                quant_band_n1_enc(enc, xb, None, &mut remaining_bits);
             } else {
-                quant_partition_enc(enc, xb, b, i, lm as i32, spread, &mut remaining_bits);
+                quant_band_enc(enc, xb, b, big_b, i, lm as i32, spread, tf_change, &mut remaining_bits);
             }
             balance += shape_bits[i] + tell;
         }
