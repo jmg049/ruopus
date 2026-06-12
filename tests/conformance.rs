@@ -27,7 +27,6 @@ struct DemoPacket {
     data: Vec<u8>,
     /// The encoder's final range-coder `rng` value; a conformant decoder's
     /// range decoder finishes each packet with this exact value.
-    #[expect(dead_code, reason = "the oracle for the decoder once SILK/CELT land")]
     final_range: u32,
 }
 
@@ -148,4 +147,58 @@ fn vector_suite_exercises_every_configuration_class() {
         "all 32 TOC configurations appear in the suite"
     );
     assert_eq!(modes, [true; 3], "all three modes appear in the suite");
+}
+
+/// The CELT end band per Opus bandwidth (`opus_decoder.c` endband mapping).
+fn celt_end_band(bw: opus_native::Bandwidth) -> usize {
+    use opus_native::Bandwidth;
+    match bw {
+        Bandwidth::NarrowBand => 13,
+        Bandwidth::MediumBand | Bandwidth::WideBand => 17,
+        Bandwidth::SuperWideBand => 19,
+        Bandwidth::FullBand => 21,
+    }
+}
+
+/// Decodes every CELT-only vector packet and checks the decoder's final
+/// range value against the encoder's recorded value - the bit-exactness
+/// oracle: it matches only if every entropy-coded symbol in every frame was
+/// consumed exactly as the encoder produced it.
+#[test]
+fn celt_only_vectors_final_range_is_bit_exact() {
+    use opus_native::RangeDecoder;
+    use opus_native::celt::decoder::CeltDecoder;
+
+    let Some(dir) = vectors_dir() else { return };
+
+    // The CELT-only vectors: testvector01 (SWB/FB), 07 (every bandwidth),
+    // 11 (FB code 3).
+    for name in ["testvector01", "testvector07", "testvector11"] {
+        let bits = std::fs::read(dir.join(format!("{name}.bit"))).expect("read .bit");
+        let packets = parse_bit_file(&bits);
+
+        let mut decoder = CeltDecoder::new(2);
+        let mut checked = 0usize;
+        for (pi, pkt) in packets.iter().enumerate() {
+            let parsed = Packet::parse(&pkt.data).expect("valid");
+            let toc = parsed.toc();
+            assert_eq!(toc.mode(), Mode::CeltOnly, "{name} packet {pi}");
+            let frame_size = toc.frame_size().samples_per_channel_48k();
+            let channels = usize::from(toc.channels());
+            let end = celt_end_band(toc.bandwidth());
+
+            let mut final_range = 0u32;
+            for frame in parsed.frames() {
+                let mut dec = RangeDecoder::new(frame);
+                let _pcm = decoder.decode_frame(&mut dec, frame.len(), frame_size, channels, 0, end);
+                final_range = dec.range_size();
+            }
+            assert_eq!(
+                final_range, pkt.final_range,
+                "{name} packet {pi}: final range mismatch (decoder desynchronized)"
+            );
+            checked += 1;
+        }
+        eprintln!("{name}: {checked} packets bit-exact");
+    }
 }

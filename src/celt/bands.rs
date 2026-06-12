@@ -703,7 +703,7 @@ fn quant_band_stereo(
             cm = quant_band(ctx, dec, x, mbits, big_b, lowband, lm, lowband_out, Q15_ONE, fill);
             let rebalance = mbits - (rebalance - ctx.remaining_bits);
             let mut sbits = sbits;
-            if rebalance > 3 << BITRES && itheta != 16384 {
+            if rebalance > 3 << BITRES && itheta != 0 {
                 sbits += rebalance - (3 << BITRES);
             }
             cm |= quant_band(ctx, dec, y, sbits, big_b, None, lm, None, side, fill >> big_b);
@@ -711,7 +711,7 @@ fn quant_band_stereo(
             cm = quant_band(ctx, dec, y, sbits, big_b, None, lm, None, side, fill >> big_b);
             let rebalance = sbits - (rebalance - ctx.remaining_bits);
             let mut mbits = mbits;
-            if rebalance > 3 << BITRES && itheta != 0 {
+            if rebalance > 3 << BITRES && itheta != 16384 {
                 mbits += rebalance - (3 << BITRES);
             }
             cm |= quant_band(ctx, dec, x, mbits, big_b, lowband, lm, lowband_out, Q15_ONE, fill);
@@ -940,6 +940,79 @@ pub fn quant_all_bands(
         update_lowband = b > (n as i32) << BITRES;
     }
     *seed = ctx.seed;
+}
+
+/// Anti-collapse for transient frames (`anti_collapse`, RFC 6716 §4.3.5):
+/// injects noise into MDCT blocks that received no pulses, at a level tied
+/// to the band's recent energy history, then renormalises the band.
+///
+/// `x` is the per-channel concatenated spectrum (`channels * size`);
+/// `log_e`/`prev1`/`prev2` are the current and two previous frames' band
+/// energies; `pulses` is the allocation's shape budget (1/8 bits).
+#[allow(clippy::too_many_arguments, reason = "mirrors the reference anti_collapse signature")]
+pub fn anti_collapse(
+    x: &mut [f32],
+    collapse_masks: &[u8],
+    lm: usize,
+    channels: usize,
+    size: usize,
+    start: usize,
+    end: usize,
+    log_e: &[[f32; NB_EBANDS]; 2],
+    prev1_log_e: &[[f32; NB_EBANDS]; 2],
+    prev2_log_e: &[[f32; NB_EBANDS]; 2],
+    pulses: &[i32; NB_EBANDS],
+    mut seed: u32,
+) {
+    for i in start..end {
+        let n0 = (EBANDS[i + 1] - EBANDS[i]) as usize;
+        // Depth in 1/8 bits per sample (integer division, like the reference).
+        let depth = (1 + pulses[i]) / ((n0 << lm) as i32);
+        let thresh = 0.5 * libm_exp2(-0.125 * depth as f32);
+        let sqrt_1 = 1.0 / (((n0 << lm) as f32).sqrt());
+
+        for ch in 0..channels {
+            let mut prev1 = prev1_log_e[ch][i];
+            let mut prev2 = prev2_log_e[ch][i];
+            if channels == 1 {
+                prev1 = prev1.max(prev1_log_e[1][i]);
+                prev2 = prev2.max(prev2_log_e[1][i]);
+            }
+            let ediff = (log_e[ch][i] - prev1.min(prev2)).max(0.0);
+
+            // Short blocks don't have the same energy as long blocks.
+            let mut r = 2.0 * libm_exp2(-ediff);
+            if lm == 3 {
+                r *= core::f32::consts::SQRT_2;
+            }
+            let r = thresh.min(r) * sqrt_1;
+
+            let base = ch * size + ((EBANDS[i] as usize) << lm);
+            let band_len = n0 << lm;
+            let mut renormalize = false;
+            for k in 0..(1usize << lm) {
+                // Detect collapse.
+                if collapse_masks[i * channels + ch] & (1 << k) == 0 {
+                    // Fill with noise.
+                    for j in 0..n0 {
+                        seed = celt_lcg_rand(seed);
+                        x[base + (j << lm) + k] = if seed & 0x8000 != 0 { r } else { -r };
+                    }
+                    renormalize = true;
+                }
+            }
+            // We just added some energy: renormalise.
+            if renormalize {
+                renormalise_vector(&mut x[base..base + band_len], Q15_ONE);
+            }
+        }
+    }
+}
+
+/// `2^x` for the anti-collapse gains (the reference float build's
+/// `celt_exp2`).
+fn libm_exp2(x: f32) -> f32 {
+    (core::f64::consts::LN_2 * f64::from(x)).exp() as f32
 }
 
 #[cfg(test)]

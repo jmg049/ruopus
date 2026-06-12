@@ -260,6 +260,19 @@ impl<'a> RangeDecoder<'a> {
         tell_frac(self.nbits_total, self.rng)
     }
 
+    /// Advances the bit-usage accounting to `bits` total, as if the
+    /// intervening bits had been consumed, without reading them.
+    ///
+    /// Used by the CELT silence path, which "pretends to have read all the
+    /// remaining bits" (RFC 6716 §4.3, reference `celt_decode_with_ec`) so
+    /// downstream budget checks behave identically to the reference.
+    #[cfg(feature = "std")]
+    pub(crate) fn force_tell(&mut self, bits: u32) {
+        let current = self.tell();
+        debug_assert!(bits >= current);
+        self.nbits_total += bits - current;
+    }
+
     /// The current range size.
     ///
     /// After decoding a symbol sequence this must exactly equal the encoder's

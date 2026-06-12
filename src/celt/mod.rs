@@ -23,9 +23,11 @@
 //! | [`vq`] | `vq.c`, §4.3.4.3 | spreading rotation, PVQ shape decoding, renormalisation |
 //! | [`bands`] | `bands.c`, §4.3.4 | the band loop: theta splits, stereo, folding, collapse masks |
 //! | [`mdct`] | `mdct.c`, §4.3.7 | the low-overlap MDCT (forward + backward) with the FFT backend seam |
+//! | [`decoder`] | `celt_decoder.c`, §4.3 | the frame driver: flags, post-filter, synthesis, de-emphasis |
 
 pub mod bands;
 pub mod cwrs;
+pub mod decoder;
 pub mod energy;
 pub mod laplace;
 pub mod mdct;
