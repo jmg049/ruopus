@@ -20,6 +20,7 @@
 //! per stage and finally against the official test vectors' final-range and
 //! PCM oracles.
 
+pub(crate) mod gains;
 pub(crate) mod indices;
 pub(crate) mod math;
 pub(crate) mod pulses;
