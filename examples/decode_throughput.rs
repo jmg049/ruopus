@@ -1,17 +1,14 @@
-//! Measures CELT decode throughput over an `opus_demo` bitstream file:
+//! Measures Opus decode throughput over an `opus_demo` bitstream file:
 //!
 //! ```sh
-//! cargo run --release --example decode_throughput tests/vectors/testvector01.bit
+//! cargo run --release --example decode_throughput tests/vectors/testvector05.bit
 //! ```
 //!
-//! Reports decoded audio seconds per wall-clock second (× realtime). Compare
-//! backends with `--no-default-features --features std` (built-in FFT) vs the
-//! default (`spectrograms` FFT).
+//! Reports decoded audio seconds per wall-clock second (× realtime).
 
 use std::time::Instant;
 
-use opus_native::celt::decoder::CeltDecoder;
-use opus_native::{Bandwidth, Mode, Packet, RangeDecoder};
+use opus_native::OpusDecoder;
 
 fn main() {
     let path = std::env::args().nth(1).expect("usage: decode_throughput <file.bit>");
@@ -27,26 +24,12 @@ fn main() {
         off += len;
     }
 
-    let mut decoder = CeltDecoder::new(2);
+    let mut decoder = OpusDecoder::new(2);
     let mut samples = 0u64;
     let start = Instant::now();
     for pkt in &packets {
-        let parsed = Packet::parse(pkt).expect("valid packet");
-        let toc = parsed.toc();
-        assert_eq!(toc.mode(), Mode::CeltOnly, "this example decodes CELT-only streams");
-        let frame_size = toc.frame_size().samples_per_channel_48k();
-        let channels = usize::from(toc.channels());
-        let end = match toc.bandwidth() {
-            Bandwidth::NarrowBand => 13,
-            Bandwidth::MediumBand | Bandwidth::WideBand => 17,
-            Bandwidth::SuperWideBand => 19,
-            Bandwidth::FullBand => 21,
-        };
-        for frame in parsed.frames() {
-            let mut dec = RangeDecoder::new(frame);
-            let pcm = decoder.decode_frame(&mut dec, frame.len(), frame_size, channels, 0, end);
-            samples += (pcm.len() / 2) as u64;
-        }
+        let pcm = decoder.decode_packet(pkt).expect("valid packet");
+        samples += (pcm.len() / 2) as u64;
     }
     let elapsed = start.elapsed().as_secs_f64();
     let audio_secs = samples as f64 / 48_000.0;
