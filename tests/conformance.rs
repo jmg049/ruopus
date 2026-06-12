@@ -160,12 +160,20 @@ fn celt_end_band(bw: opus_native::Bandwidth) -> usize {
     }
 }
 
-/// Decodes every CELT-only vector packet and checks the decoder's final
-/// range value against the encoder's recorded value - the bit-exactness
-/// oracle: it matches only if every entropy-coded symbol in every frame was
-/// consumed exactly as the encoder produced it.
+/// Decodes every CELT-only vector packet and checks two oracles per vector:
+///
+/// 1. **Final range** (per packet): the decoder's range-coder `rng` after
+///    the last frame must equal the encoder's recorded value - it matches
+///    only if every entropy-coded symbol was consumed exactly as produced.
+/// 2. **PCM output** (whole vector): the synthesized audio against the
+///    reference decoder's `.dec` output. The synthesis chain (denormalise,
+///    inverse MDCT, post-filter, de-emphasis) never touches the range
+///    coder, so only this catches bugs there. The reference is a float
+///    build like ours, so the SNR demanded here is far above the official
+///    `opus_compare` bar; FFT and float-ordering differences are all that
+///    remain.
 #[test]
-fn celt_only_vectors_final_range_is_bit_exact() {
+fn celt_only_vectors_final_range_is_bit_exact_and_pcm_matches() {
     use opus_native::RangeDecoder;
     use opus_native::celt::decoder::CeltDecoder;
 
@@ -176,9 +184,10 @@ fn celt_only_vectors_final_range_is_bit_exact() {
     for name in ["testvector01", "testvector07", "testvector11"] {
         let bits = std::fs::read(dir.join(format!("{name}.bit"))).expect("read .bit");
         let packets = parse_bit_file(&bits);
+        let reference = std::fs::read(dir.join(format!("{name}.dec"))).expect("read .dec");
 
         let mut decoder = CeltDecoder::new(2);
-        let mut checked = 0usize;
+        let mut pcm = Vec::new();
         for (pi, pkt) in packets.iter().enumerate() {
             let parsed = Packet::parse(&pkt.data).expect("valid");
             let toc = parsed.toc();
@@ -190,15 +199,29 @@ fn celt_only_vectors_final_range_is_bit_exact() {
             let mut final_range = 0u32;
             for frame in parsed.frames() {
                 let mut dec = RangeDecoder::new(frame);
-                let _pcm = decoder.decode_frame(&mut dec, frame.len(), frame_size, channels, 0, end);
+                pcm.extend(decoder.decode_frame(&mut dec, frame.len(), frame_size, channels, 0, end));
                 final_range = dec.range_size();
             }
             assert_eq!(
                 final_range, pkt.final_range,
                 "{name} packet {pi}: final range mismatch (decoder desynchronized)"
             );
-            checked += 1;
         }
-        eprintln!("{name}: {checked} packets bit-exact");
+
+        // The reference decode is interleaved stereo s16le at 48 kHz,
+        // converted from float exactly as `opus_demo` does (scale 32768,
+        // saturate, round to nearest with ties to even).
+        assert_eq!(pcm.len(), reference.len() / 2, "{name}: PCM length");
+        let mut signal = 0.0f64;
+        let mut noise = 0.0f64;
+        for (ours, theirs) in pcm.iter().zip(reference.chunks_exact(2)) {
+            let theirs = i16::from_le_bytes([theirs[0], theirs[1]]);
+            let ours = (ours * 32768.0).clamp(-32768.0, 32767.0).round_ties_even() as i16;
+            signal += f64::from(theirs) * f64::from(theirs);
+            noise += f64::from(ours - theirs) * f64::from(ours - theirs);
+        }
+        let snr_db = 10.0 * (signal / noise.max(f64::MIN_POSITIVE)).log10();
+        eprintln!("{name}: {} packets bit-exact, PCM SNR {snr_db:.1} dB", packets.len());
+        assert!(snr_db > 45.0, "{name}: PCM SNR {snr_db:.1} dB vs reference decode");
     }
 }

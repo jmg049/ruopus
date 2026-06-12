@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- Conformance: CELT-only vectors are also scored against the reference PCM decode (`.dec`), validating the synthesis chain end to end - testvector01/07/11 land at 96/83/104 dB SNR against the reference float build
 - CELT frame decoder (§4.3): the full `celt_decode_with_ec` sequence from bitstream flags through PVQ shapes, anti-collapse, synthesis (inverse MDCT, comb post-filter, de-emphasis) and cross-frame state - every packet of the CELT-only official test vectors (testvector01/07/11) decodes bit-exactly, with the per-packet final-range oracle enforced in the conformance suite
 - CELT low-overlap MDCT (§4.3.7), forward and backward, with the Vorbis power window and short-block interleaving; the inner FFT is isolated behind a seam so the `spectrograms` crate can become an optional accelerated backend while the default build stays dependency-free - validated by TDAC perfect-reconstruction round trips (zero delay, unit gain)
 - CELT band shape decoding (§4.3.4): PVQ shape decode with spreading rotation (`vq`), and the full band loop (`bands`) - recursive theta splits with the step/uniform/triangular PDFs, bit-exact cos/log2tan steering, stereo (theta, intensity, dual, N=2 special case), time/frequency reshaping (Haar + Hadamard), spectral folding with LCG noise fill, and collapse-mask tracking
