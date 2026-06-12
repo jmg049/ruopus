@@ -11,10 +11,13 @@
 
 use alloc::vec;
 
-use super::indices::{EcPrevState, MAX_LPC_ORDER, SideInfoIndices, TYPE_VOICED};
+use crate::range::RangeDecoder;
+
+use super::indices::{CondCoding, EcPrevState, MAX_LPC_ORDER, SideInfoIndices, TYPE_VOICED, decode_indices};
 use super::lpc::lpc_analysis_filter;
 use super::math::{add_sat32, div32_var_q, inverse32_var_q, lshift_sat32, rshift_round, smlawb, smulwb, smulww};
-use super::params::{DecoderControl, LTP_ORDER, ParamState};
+use super::params::{DecoderControl, LTP_ORDER, ParamState, decode_parameters};
+use super::pulses::decode_pulses;
 use super::tables::QUANTIZATION_OFFSETS_Q10;
 
 /// `MAX_FRAME_LENGTH`: 20 ms at 16 kHz.
@@ -97,6 +100,56 @@ impl SilkChannelDecoder {
             ec_prev: EcPrevState::default(),
             params: ParamState::default(),
         }
+    }
+
+    /// `silk_decode_frame` (normal decode path): side information,
+    /// excitation, parameters, synthesis, and history update for one frame.
+    ///
+    /// Packet-loss concealment and comfort-noise state updates are not yet
+    /// ported; they only affect output after lost packets, never a
+    /// loss-free decode.
+    pub fn decode_frame(
+        &mut self,
+        dec: &mut RangeDecoder,
+        xq: &mut [i16],
+        vad_flag: bool,
+        decode_lbrr: bool,
+        cond_coding: CondCoding,
+    ) {
+        debug_assert!(xq.len() >= self.frame_length);
+
+        self.indices = decode_indices(
+            dec,
+            self.fs_khz,
+            self.nb_subfr,
+            vad_flag,
+            decode_lbrr,
+            cond_coding,
+            &mut self.ec_prev,
+        );
+        let pulses = decode_pulses(
+            dec,
+            i32::from(self.indices.signal_type),
+            i32::from(self.indices.quant_offset_type),
+            self.frame_length,
+        );
+
+        self.params.loss_cnt = self.loss_cnt;
+        let mut indices = self.indices.clone();
+        let mut ctrl = decode_parameters(&mut indices, &mut self.params, self.fs_khz, self.nb_subfr, cond_coding);
+        self.indices = indices;
+
+        self.decode_core(&mut ctrl, xq, &pulses);
+
+        // Shift the synthesis history and append this frame.
+        let mv_len = self.ltp_mem_length - self.frame_length;
+        self.out_buf.copy_within(self.frame_length..self.ltp_mem_length, 0);
+        self.out_buf[mv_len..self.ltp_mem_length].copy_from_slice(&xq[..self.frame_length]);
+
+        self.loss_cnt = 0;
+        self.prev_signal_type = i32::from(self.indices.signal_type);
+        self.params.first_frame_after_reset = false;
+        self.lag_prev = ctrl.pitch_l[self.nb_subfr - 1];
     }
 
     /// `silk_decode_core`: excitation → LTP → LPC synthesis for one frame;
@@ -337,5 +390,42 @@ mod tests {
             173, 81, 128, -8, 21, -95, -55, -132, -120, -142,
         ];
         assert_eq!(xq, want_unvoiced);
+    }
+}
+
+#[cfg(test)]
+mod frame_tests {
+    use alloc::vec;
+
+    use super::*;
+
+    fn lcg(seed: &mut u32) -> u32 {
+        *seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        *seed
+    }
+
+    /// The frame driver must decode arbitrary byte streams without
+    /// panicking for every rate/duration/coding configuration, advancing
+    /// state across frames (robustness; the conformance vectors are the
+    /// correctness oracle once the packet layer lands).
+    #[test]
+    fn decode_frame_handles_arbitrary_streams() {
+        let mut seed = 0x0531_u32;
+        for fs_khz in [8i32, 12, 16] {
+            for nb_subfr in [2usize, 4] {
+                let mut decoder = SilkChannelDecoder::new(fs_khz, nb_subfr);
+                let mut xq = [0i16; MAX_FRAME_LENGTH];
+                for frame in 0..8 {
+                    let data: vec::Vec<u8> = (0..200).map(|_| (lcg(&mut seed) >> 13) as u8).collect();
+                    let mut dec = RangeDecoder::new(&data);
+                    let cond = if frame == 0 {
+                        CondCoding::Independently
+                    } else {
+                        CondCoding::Conditionally
+                    };
+                    decoder.decode_frame(&mut dec, &mut xq, frame % 2 == 0, false, cond);
+                }
+            }
+        }
     }
 }
