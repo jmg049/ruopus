@@ -21,4 +21,5 @@
 //! PCM oracles.
 
 pub(crate) mod math;
+pub(crate) mod pulses;
 pub mod tables;
