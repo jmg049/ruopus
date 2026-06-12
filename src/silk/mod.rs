@@ -29,5 +29,6 @@ pub(crate) mod nlsf;
 pub(crate) mod params;
 pub(crate) mod pitch;
 pub(crate) mod pulses;
+pub(crate) mod resampler;
 pub(crate) mod stereo;
 pub mod tables;
