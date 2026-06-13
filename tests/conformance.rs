@@ -680,7 +680,9 @@ fn celt_encoder_round_trips_through_the_decoder() {
         noise += (a - b) * (a - b);
     }
     let snr = 10.0 * (sig / noise.max(1e-30)).log10();
-    assert!(snr > 20.0, "round-trip SNR {snr:.1} dB");
+    // Dynalloc + trim analysis lifts this well above the original 20 dB
+    // floor (~30 dB on this tonal signal at 159 bytes/frame).
+    assert!(snr > 25.0, "round-trip SNR {snr:.1} dB");
 }
 
 /// The stereo CELT encoder round trip: decorrelated channels through the

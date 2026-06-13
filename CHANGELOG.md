@@ -8,6 +8,7 @@ All notable changes to this project will be documented in this file.
 - **BREAKING:** the `spectrograms` FFT backend is now a default feature - the default build decodes at ~410-730× realtime (one core) vs ~10× with the built-in evaluation; use `default-features = false` for the zero-dependency build
 
 ### Added
+- CELT encoder: dynamic-allocation and trim analysis - per-band importance boosts (`dynalloc_analysis`) and spectral-tilt/transient-driven allocation trim (`alloc_trim_analysis`), lifting tonal-signal SNR by ~9 dB (23.7 → 32.7 dB at 64 kbps mono)
 - CELT encoder: transient detection (`transient_analysis`) with short-block coding - encode-side Haar/Hadamard band reshaping, the transient tf schedule and tf_select, and the anti-collapse bit; conformant at every CELT frame size (2.5-20 ms), mono and stereo
 - CELT encoder (§5.3), mono and stereo, long blocks: conservative-but-conformant frame decisions with bit-exact energy quantisation, allocation, theta splits and PVQ search - encoded streams round trip through the decoder with bit-identical range states and are accepted by libopus's `opus_demo` with zero range-coder mismatches across byte budgets 25-251
 - `decode_throughput` example measuring decode speed (× realtime) over an `opus_demo` bitstream
