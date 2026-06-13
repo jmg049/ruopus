@@ -40,6 +40,14 @@ const SPREAD_ICDF: [u8; 4] = [25, 23, 2, 0];
 const TRIM_ICDF: [u8; 11] = [126, 124, 119, 109, 87, 41, 19, 9, 4, 2, 0];
 /// Post-filter tapset ICDF (`tapset_icdf`).
 const TAPSET_ICDF: [u8; 3] = [2, 1, 0];
+/// Intensity-stereo band thresholds by rate (kb/s) and their hysteresis.
+const INTENSITY_THRESHOLDS: [f32; 21] = [
+    1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 16.0, 24.0, 36.0, 44.0, 50.0, 56.0, 62.0, 67.0, 72.0, 79.0, 88.0, 106.0,
+    134.0,
+];
+const INTENSITY_HYSTERESIS: [f32; 21] = [
+    1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0, 3.0, 4.0, 5.0, 6.0, 8.0, 8.0,
+];
 
 /// A CELT encoder at 48 kHz (mono or stereo).
 pub struct CeltEncoder {
@@ -67,6 +75,9 @@ pub struct CeltEncoder {
     tonal_average: i32,
     /// The previous frame's spreading decision (`spread_decision`).
     spread_decision: i32,
+    /// The previous frame's intensity-stereo band (`intensity`), for the
+    /// hysteresis decision.
+    intensity: usize,
     /// Pre-filter history (`prefilter_mem`): the last `COMBFILTER_MAXPERIOD`
     /// pre-emphasised samples per channel.
     prefilter_mem: [Vec<f32>; 2],
@@ -116,6 +127,7 @@ impl CeltEncoder {
             last_transient: false,
             tonal_average: 256,
             spread_decision: Spread::Normal as i32,
+            intensity: 0,
             prefilter_mem: [vec![0.0; COMBFILTER_MAXPERIOD], vec![0.0; COMBFILTER_MAXPERIOD]],
             prefilter_period: COMBFILTER_MINPERIOD,
             prefilter_gain: 0.0,
@@ -441,10 +453,24 @@ impl CeltEncoder {
             5
         };
 
-        // The implicit allocation (shared with the decoder). Stereo
-        // decisions are conservative: intensity at `end` (full stereo in
-        // every band; the allocator clamps it to the coded bands) and no
-        // dual stereo.
+        // Stereo decisions: the first intensity-stereo band (rate-driven,
+        // with hysteresis) and whether to code the channels separately
+        // (dual stereo). Mono keeps full stereo / no dual.
+        let (intensity, dual_stereo) = if channels == 2 {
+            let dual = lm != 0 && stereo_analysis(&x, n, lm);
+            self.intensity = hysteresis_decision(
+                (equiv_rate / 1000) as f32,
+                &INTENSITY_THRESHOLDS,
+                &INTENSITY_HYSTERESIS,
+                self.intensity,
+            )
+            .clamp(start, end);
+            (self.intensity, dual)
+        } else {
+            (end, false)
+        };
+
+        // The implicit allocation (shared with the decoder).
         let mut bits = (((nb_bytes * 8) << 3) as i32) - enc.tell_frac() as i32 - 1;
         let anti_collapse_rsv = if is_transient && lm >= 2 && bits >= ((lm as i32 + 2) << 3) {
             1 << 3
@@ -456,8 +482,8 @@ impl CeltEncoder {
             &mut AllocEc::Enc {
                 enc: &mut enc,
                 signal_bandwidth: end - 1,
-                intensity: end,
-                dual_stereo: false,
+                intensity,
+                dual_stereo,
             },
             start,
             end,
@@ -1238,6 +1264,53 @@ fn alloc_trim_analysis(
     trim -= 2.0 * tf_estimate;
 
     (trim + 0.5).floor().clamp(0.0, 10.0) as i32
+}
+
+/// `hysteresis_decision`: picks the threshold band for `val`, sticking with
+/// `prev` while within its hysteresis to avoid chatter.
+fn hysteresis_decision(val: f32, thresholds: &[f32], hysteresis: &[f32], prev: usize) -> usize {
+    let n = thresholds.len();
+    let mut i = n;
+    for (k, &t) in thresholds.iter().enumerate() {
+        if val < t {
+            i = k;
+            break;
+        }
+    }
+    if i > prev && val < thresholds[prev] + hysteresis[prev] {
+        i = prev;
+    }
+    if i < prev && val > thresholds[prev - 1] - hysteresis[prev - 1] {
+        i = prev;
+    }
+    i
+}
+
+/// `stereo_analysis`: an L1-norm comparison of the L/R versus mid/side
+/// entropy over the low bands, deciding whether dual stereo is worthwhile.
+#[allow(
+    clippy::approx_constant,
+    reason = "verbatim reference constant 0.707107, not 1/sqrt(2)"
+)]
+fn stereo_analysis(x: &[f32], n0: usize, lm: usize) -> bool {
+    const EPSILON: f32 = 1e-15;
+    let mut sum_lr = EPSILON;
+    let mut sum_ms = EPSILON;
+    for i in 0..13 {
+        for j in (EBANDS[i] as usize) << lm..(EBANDS[i + 1] as usize) << lm {
+            let l = x[j];
+            let r = x[n0 + j];
+            sum_lr += l.abs() + r.abs();
+            sum_ms += (l + r).abs() + (l - r).abs();
+        }
+    }
+    sum_ms *= 0.707_107;
+    let mut thetas = 13i32;
+    if lm <= 1 {
+        thetas -= 8;
+    }
+    let w = (i32::from(EBANDS[13]) << (lm + 1)) as f32;
+    (w + thetas as f32) * sum_ms > w * sum_lr
 }
 
 /// `spreading_decision` (float build, no analysis module, `update_hf`
