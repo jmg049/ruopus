@@ -52,6 +52,9 @@ pub struct CeltEncoder {
     /// Energy predictor state (`oldBandE`), shared semantics with the
     /// decoder.
     energy: EnergyState,
+    /// The previous frame's coarse-energy quantisation error per band
+    /// (`energyError`, clamped to ±0.5), used to stabilise the gain.
+    energy_error: [[f32; NB_EBANDS]; 2],
     /// Frames encoded (the first is coded intra).
     frames: u64,
     /// Consecutive transient frames (`consec_transient`), steering the
@@ -107,6 +110,7 @@ impl CeltEncoder {
             preemph_mem: [0.0; 2],
             in_mem: [[0.0; OVERLAP]; 2],
             energy: EnergyState::default(),
+            energy_error: [[0.0; NB_EBANDS]; 2],
             frames: 0,
             consec_transient: 0,
             last_transient: false,
@@ -315,6 +319,19 @@ impl CeltEncoder {
             enc.encode_bit_logp(intra, 3);
         }
 
+        // When the energy is stable, bias the coarse quantisation toward the
+        // previous frame's error so the gain stays steady (a constant offset
+        // beats fluctuation). Runs after dynalloc/tf, which saw the unbiased
+        // energies.
+        #[allow(clippy::needless_range_loop, reason = "indices address three per-band arrays")]
+        for c in 0..channels {
+            for i in start..end {
+                if (band_log_e[c][i] - self.energy.old_ebands[c][i]).abs() < 2.0 {
+                    band_log_e[c][i] -= 0.25 * self.energy_error[c][i];
+                }
+            }
+        }
+
         // Coarse energy.
         let mut error = [[0.0f32; NB_EBANDS]; 2];
         self.quant_coarse_energy(&mut enc, start, end, &band_log_e, &mut error, intra, lm, total_bits);
@@ -493,6 +510,15 @@ impl CeltEncoder {
             &alloc.fine_priority,
             bits_left,
         );
+
+        // Store this frame's residual energy error (clamped) for the next
+        // frame's gain-stabilisation bias.
+        #[allow(clippy::needless_range_loop, reason = "indices address two per-band arrays")]
+        for c in 0..channels {
+            for i in start..end {
+                self.energy_error[c][i] = error[c][i].clamp(-0.5, 0.5);
+            }
+        }
 
         if is_transient {
             self.consec_transient += 1;
