@@ -267,109 +267,111 @@ pub(crate) fn decode_indices(
     ind
 }
 
+/// `silk_encode_indices`: writes one frame's side information - type/offset,
+/// gains (delta or absolute), the NLSF VQ path, NLSF interpolation, and (for
+/// voiced frames) the pitch lag/contour, LTP gains/scaling - plus the LCG
+/// seed. The exact inverse of [`decode_indices`].
+#[allow(clippy::too_many_lines, reason = "mirrors the reference sequence")]
+#[allow(clippy::too_many_arguments, reason = "mirrors the reference signature")]
+pub(crate) fn encode_indices(
+    enc: &mut crate::range::RangeEncoder,
+    ind: &SideInfoIndices,
+    fs_khz: i32,
+    nb_subfr: usize,
+    encode_lbrr: bool,
+    vad_flag: bool,
+    cond_coding: CondCoding,
+    prev: &mut EcPrevState,
+) {
+    let cb = nlsf_codebook(fs_khz);
+    let typ = i32::from(ind.signal_type) * 2 + i32::from(ind.quant_offset_type);
+    if encode_lbrr || vad_flag {
+        enc.encode_icdf((typ - 2) as usize, &TYPE_OFFSET_VAD_ICDF, 8);
+    } else {
+        enc.encode_icdf(typ as usize, &TYPE_OFFSET_NO_VAD_ICDF, 8);
+    }
+
+    if cond_coding == CondCoding::Conditionally {
+        enc.encode_icdf(ind.gains_indices[0] as usize, &DELTA_GAIN_ICDF, 8);
+    } else {
+        enc.encode_icdf(
+            (ind.gains_indices[0] >> 3) as usize,
+            &GAIN_ICDF[ind.signal_type as usize],
+            8,
+        );
+        enc.encode_icdf((ind.gains_indices[0] & 7) as usize, &UNIFORM8_ICDF, 8);
+    }
+    for i in 1..nb_subfr {
+        enc.encode_icdf(ind.gains_indices[i] as usize, &DELTA_GAIN_ICDF, 8);
+    }
+
+    enc.encode_icdf(
+        ind.nlsf_indices[0] as usize,
+        &cb.cb1_icdf[(ind.signal_type as usize >> 1) * cb.n_vectors..],
+        8,
+    );
+    let (ec_ix, _) = nlsf_unpack(cb, ind.nlsf_indices[0] as usize);
+    for (i, &ec_off) in ec_ix.iter().enumerate().take(cb.order) {
+        let v = i32::from(ind.nlsf_indices[i + 1]);
+        let table = &cb.ec_icdf[ec_off as usize..];
+        if v >= NLSF_QUANT_MAX_AMPLITUDE {
+            enc.encode_icdf(2 * NLSF_QUANT_MAX_AMPLITUDE as usize, table, 8);
+            enc.encode_icdf((v - NLSF_QUANT_MAX_AMPLITUDE) as usize, &NLSF_EXT_ICDF, 8);
+        } else if v <= -NLSF_QUANT_MAX_AMPLITUDE {
+            enc.encode_icdf(0, table, 8);
+            enc.encode_icdf((-v - NLSF_QUANT_MAX_AMPLITUDE) as usize, &NLSF_EXT_ICDF, 8);
+        } else {
+            enc.encode_icdf((v + NLSF_QUANT_MAX_AMPLITUDE) as usize, table, 8);
+        }
+    }
+
+    if nb_subfr == MAX_NB_SUBFR {
+        enc.encode_icdf(ind.nlsf_interp_coef_q2 as usize, &NLSF_INTERPOLATION_FACTOR_ICDF, 8);
+    }
+
+    if i32::from(ind.signal_type) == TYPE_VOICED {
+        let mut encode_absolute = true;
+        if cond_coding == CondCoding::Conditionally && prev.signal_type == TYPE_VOICED {
+            let delta = i32::from(ind.lag_index) - i32::from(prev.lag_index);
+            let symbol = if (-8..=11).contains(&delta) {
+                encode_absolute = false;
+                delta + 9
+            } else {
+                0
+            };
+            enc.encode_icdf(symbol as usize, &PITCH_DELTA_ICDF, 8);
+        }
+        if encode_absolute {
+            let half = fs_khz >> 1;
+            enc.encode_icdf((i32::from(ind.lag_index) / half) as usize, &PITCH_LAG_ICDF, 8);
+            enc.encode_icdf(
+                (i32::from(ind.lag_index) % half) as usize,
+                pitch_lag_low_bits_icdf(fs_khz),
+                8,
+            );
+        }
+        prev.lag_index = ind.lag_index;
+
+        enc.encode_icdf(ind.contour_index as usize, pitch_contour_icdf(fs_khz, nb_subfr), 8);
+
+        enc.encode_icdf(ind.per_index as usize, &LTP_PER_INDEX_ICDF, 8);
+        for k in 0..nb_subfr {
+            enc.encode_icdf(ind.ltp_index[k] as usize, ltp_gain_icdf(ind.per_index as usize), 8);
+        }
+        if cond_coding == CondCoding::Independently {
+            enc.encode_icdf(ind.ltp_scale_index as usize, &LTPSCALE_ICDF, 8);
+        }
+    }
+    prev.signal_type = i32::from(ind.signal_type);
+
+    enc.encode_icdf(ind.seed as usize, &UNIFORM4_ICDF, 8);
+}
+
 #[cfg(test)]
 mod tests {
     use crate::range::{RangeDecoder, RangeEncoder};
 
     use super::*;
-
-    /// `silk_encode_indices` (encode_indices.c), ported for round-trip
-    /// testing.
-    #[allow(clippy::too_many_lines, reason = "mirrors the reference sequence")]
-    #[allow(clippy::too_many_arguments, reason = "mirrors the reference signature")]
-    fn encode_indices(
-        enc: &mut RangeEncoder,
-        ind: &SideInfoIndices,
-        fs_khz: i32,
-        nb_subfr: usize,
-        encode_lbrr: bool,
-        vad_flag: bool,
-        cond_coding: CondCoding,
-        prev: &mut EcPrevState,
-    ) {
-        let cb = nlsf_codebook(fs_khz);
-        let typ = i32::from(ind.signal_type) * 2 + i32::from(ind.quant_offset_type);
-        if encode_lbrr || vad_flag {
-            enc.encode_icdf((typ - 2) as usize, &TYPE_OFFSET_VAD_ICDF, 8);
-        } else {
-            enc.encode_icdf(typ as usize, &TYPE_OFFSET_NO_VAD_ICDF, 8);
-        }
-
-        if cond_coding == CondCoding::Conditionally {
-            enc.encode_icdf(ind.gains_indices[0] as usize, &DELTA_GAIN_ICDF, 8);
-        } else {
-            enc.encode_icdf(
-                (ind.gains_indices[0] >> 3) as usize,
-                &GAIN_ICDF[ind.signal_type as usize],
-                8,
-            );
-            enc.encode_icdf((ind.gains_indices[0] & 7) as usize, &UNIFORM8_ICDF, 8);
-        }
-        for i in 1..nb_subfr {
-            enc.encode_icdf(ind.gains_indices[i] as usize, &DELTA_GAIN_ICDF, 8);
-        }
-
-        enc.encode_icdf(
-            ind.nlsf_indices[0] as usize,
-            &cb.cb1_icdf[(ind.signal_type as usize >> 1) * cb.n_vectors..],
-            8,
-        );
-        let (ec_ix, _) = nlsf_unpack(cb, ind.nlsf_indices[0] as usize);
-        for (i, &ec_off) in ec_ix.iter().enumerate().take(cb.order) {
-            let v = i32::from(ind.nlsf_indices[i + 1]);
-            let table = &cb.ec_icdf[ec_off as usize..];
-            if v >= NLSF_QUANT_MAX_AMPLITUDE {
-                enc.encode_icdf(2 * NLSF_QUANT_MAX_AMPLITUDE as usize, table, 8);
-                enc.encode_icdf((v - NLSF_QUANT_MAX_AMPLITUDE) as usize, &NLSF_EXT_ICDF, 8);
-            } else if v <= -NLSF_QUANT_MAX_AMPLITUDE {
-                enc.encode_icdf(0, table, 8);
-                enc.encode_icdf((-v - NLSF_QUANT_MAX_AMPLITUDE) as usize, &NLSF_EXT_ICDF, 8);
-            } else {
-                enc.encode_icdf((v + NLSF_QUANT_MAX_AMPLITUDE) as usize, table, 8);
-            }
-        }
-
-        if nb_subfr == MAX_NB_SUBFR {
-            enc.encode_icdf(ind.nlsf_interp_coef_q2 as usize, &NLSF_INTERPOLATION_FACTOR_ICDF, 8);
-        }
-
-        if i32::from(ind.signal_type) == TYPE_VOICED {
-            let mut encode_absolute = true;
-            if cond_coding == CondCoding::Conditionally && prev.signal_type == TYPE_VOICED {
-                let delta = i32::from(ind.lag_index) - i32::from(prev.lag_index);
-                let symbol = if (-8..=11).contains(&delta) {
-                    encode_absolute = false;
-                    delta + 9
-                } else {
-                    0
-                };
-                enc.encode_icdf(symbol as usize, &PITCH_DELTA_ICDF, 8);
-            }
-            if encode_absolute {
-                let half = fs_khz >> 1;
-                enc.encode_icdf((i32::from(ind.lag_index) / half) as usize, &PITCH_LAG_ICDF, 8);
-                enc.encode_icdf(
-                    (i32::from(ind.lag_index) % half) as usize,
-                    pitch_lag_low_bits_icdf(fs_khz),
-                    8,
-                );
-            }
-            prev.lag_index = ind.lag_index;
-
-            enc.encode_icdf(ind.contour_index as usize, pitch_contour_icdf(fs_khz, nb_subfr), 8);
-
-            enc.encode_icdf(ind.per_index as usize, &LTP_PER_INDEX_ICDF, 8);
-            for k in 0..nb_subfr {
-                enc.encode_icdf(ind.ltp_index[k] as usize, ltp_gain_icdf(ind.per_index as usize), 8);
-            }
-            if cond_coding == CondCoding::Independently {
-                enc.encode_icdf(ind.ltp_scale_index as usize, &LTPSCALE_ICDF, 8);
-            }
-        }
-        prev.signal_type = i32::from(ind.signal_type);
-
-        enc.encode_icdf(ind.seed as usize, &UNIFORM4_ICDF, 8);
-    }
 
     fn lcg(seed: &mut u32) -> u32 {
         *seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
