@@ -8,6 +8,7 @@ All notable changes to this project will be documented in this file.
 - **BREAKING:** the `spectrograms` FFT backend is now a default feature - the default build decodes at ~410-730× realtime (one core) vs ~10× with the built-in evaluation; use `default-features = false` for the zero-dependency build
 
 ### Added
+- Public `OpusEncoder` API producing CELT-only fullband Opus packets (TOC + payload) at 48 kHz, mono or stereo - the encode-side counterpart to `OpusDecoder`, with `final_range()` and a typed `EncodeError`
 - CELT encoder: rate-driven intensity-stereo band and dual-stereo decisions (`stereo_analysis` + hysteresis), replacing the forced full-stereo placeholder
 - CELT encoder: gain-stabilising energy-error bias - nudges coarse energy toward the previous frame's quantisation error when energy is stable, matching the reference
 - CELT encoder: pitch comb pre-filter - whitens the harmonic structure before the MDCT (3-tap FIR with a windowed cross-fade) and codes the post-filter octave/period/gain/tapset, the inverse of the decoder's post-filter; lifts tonal-signal SNR to 36.3 dB at 64 kbps mono
