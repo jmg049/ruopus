@@ -8,7 +8,8 @@ All notable changes to this project will be documented in this file.
 - **BREAKING:** the `spectrograms` FFT backend is now a default feature - the default build decodes at ~410-730× realtime (one core) vs ~10× with the built-in evaluation; use `default-features = false` for the zero-dependency build
 
 ### Added
-- CELT encoder: pitch analysis for the pre-filter - a float-build port of `pitch_downsample`/`pitch_search`/`remove_doubling` (LPC whitening, decimated cross-correlation, octave-error rejection) wired into the encoder's per-frame decision (comb filtering and post-filter coding to follow)
+- CELT encoder: pitch comb pre-filter - whitens the harmonic structure before the MDCT (3-tap FIR with a windowed cross-fade) and codes the post-filter octave/period/gain/tapset, the inverse of the decoder's post-filter; lifts tonal-signal SNR to 36.3 dB at 64 kbps mono
+- CELT encoder: pitch analysis for the pre-filter - a float-build port of `pitch_downsample`/`pitch_search`/`remove_doubling` (LPC whitening, decimated cross-correlation, octave-error rejection)
 - CELT encoder: spreading decision (`spreading_decision`) and per-band time/frequency resolution analysis (`tf_analysis` + Viterbi `tf_select`), replacing the fixed normal-spread / no-tf-change defaults
 - CELT encoder: dynamic-allocation and trim analysis - per-band importance boosts (`dynalloc_analysis`) and spectral-tilt/transient-driven allocation trim (`alloc_trim_analysis`), lifting tonal-signal SNR by ~9 dB (23.7 → 32.7 dB at 64 kbps mono)
 - CELT encoder: transient detection (`transient_analysis`) with short-block coding - encode-side Haar/Hadamard band reshaping, the transient tf schedule and tf_select, and the anti-collapse bit; conformant at every CELT frame size (2.5-20 ms), mono and stereo

@@ -65,7 +65,7 @@ pub(super) const TF_SELECT_TABLE: [[i32; 8]; 4] = [
 ];
 
 /// Comb-filter tap gains per tapset (`gains`, celt.c).
-const COMB_GAINS: [[f32; 3]; 3] = [
+pub(crate) const COMB_GAINS: [[f32; 3]; 3] = [
     [0.306_640_62, 0.217_041_02, 0.129_638_67],
     [0.463_867_2, 0.268_066_4, 0.0],
     [0.799_804_7, 0.100_097_656, 0.0],

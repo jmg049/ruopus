@@ -2,13 +2,14 @@
 //! `quant_bands.c` encoder paths): mono or stereo, with transient
 //! detection and short blocks.
 //!
-//! Encoder *decisions* are deliberately conservative - transient detection
-//! but per-band tf flags all zero, no post-filter, no dynamic allocation
-//! boosts, default trim, normal spreading, full stereo (no intensity
-//! collapse, no dual stereo) - every one of which is a legal choice, so
-//! the bitstream is fully conformant; quality-improving analysis lands
-//! incrementally. The bit-exact machinery (energy quantisation,
-//! allocation, theta splits, PVQ) mirrors the decoder's exactly.
+//! The encoder now runs the full analysis chain - transient detection and
+//! short blocks, the pitch pre-filter (comb whitening), per-band time/
+//! frequency resolution, dynamic-allocation boosts, spreading and
+//! allocation trim - leaving full stereo (no intensity collapse, no dual
+//! stereo) and VBR as the remaining conservative choices. The bit-exact
+//! machinery (energy quantisation, allocation, theta splits, PVQ) mirrors
+//! the decoder's exactly, and every decision is a legal one, so the
+//! bitstream is fully conformant.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -17,7 +18,7 @@ use crate::range::RangeEncoder;
 
 use super::bands::encode::quant_all_bands_enc;
 use super::bands::haar1;
-use super::decoder::TF_SELECT_TABLE;
+use super::decoder::{COMB_GAINS, TF_SELECT_TABLE};
 use super::energy::EnergyState;
 use super::laplace::ec_laplace_encode;
 use super::mdct::MdctLookup;
@@ -37,6 +38,8 @@ const PREEMPH_COEF: f32 = 0.850_006_1;
 const SPREAD_ICDF: [u8; 4] = [25, 23, 2, 0];
 /// Allocation trim ICDF (`trim_icdf`).
 const TRIM_ICDF: [u8; 11] = [126, 124, 119, 109, 87, 41, 19, 9, 4, 2, 0];
+/// Post-filter tapset ICDF (`tapset_icdf`).
+const TAPSET_ICDF: [u8; 3] = [2, 1, 0];
 
 /// A CELT encoder at 48 kHz (mono or stereo).
 pub struct CeltEncoder {
@@ -64,11 +67,13 @@ pub struct CeltEncoder {
     /// Pre-filter history (`prefilter_mem`): the last `COMBFILTER_MAXPERIOD`
     /// pre-emphasised samples per channel.
     prefilter_mem: [Vec<f32>; 2],
-    /// The previous frame's pre-filter period and gain (for continuity).
+    /// The previous frame's pre-filter period, gain and tapset (continuity
+    /// for the comb cross-fade).
     prefilter_period: usize,
     prefilter_gain: f32,
-    /// The most recent pre-filter decision (diagnostic; not yet applied to
-    /// the signal or coded - see [`CeltEncoder::last_pitch`]).
+    prefilter_tapset: usize,
+    /// The most recent pre-filter decision (diagnostic, see
+    /// [`CeltEncoder::last_pitch`]).
     last_pitch: usize,
     last_pitch_gain: f32,
     /// Range state of the last encoded frame (the bit-exactness oracle).
@@ -110,6 +115,7 @@ impl CeltEncoder {
             prefilter_mem: [vec![0.0; COMBFILTER_MAXPERIOD], vec![0.0; COMBFILTER_MAXPERIOD]],
             prefilter_period: COMBFILTER_MINPERIOD,
             prefilter_gain: 0.0,
+            prefilter_tapset: 0,
             last_pitch: COMBFILTER_MINPERIOD,
             last_pitch_gain: 0.0,
             final_range: 0,
@@ -152,6 +158,17 @@ impl CeltEncoder {
                 mem = PREEMPH_COEF * s;
             }
             self.preemph_mem[c] = mem;
+        }
+
+        // Pitch pre-filter: estimate the pitch, comb-filter `inputs` in place
+        // to whiten the harmonic structure, and return the decision to code.
+        // Runs before the transient analysis and MDCT, which both see the
+        // filtered signal (matching the reference order).
+        let (pf_on, pitch_index, qg) = self.prefilter_analysis(&mut inputs, in_len, n, channels, nb_bytes);
+
+        // The MDCT overlap for the next frame is the filtered tail.
+        for c in 0..channels {
+            let input = &inputs[c * in_len..(c + 1) * in_len];
             self.in_mem[c].copy_from_slice(&input[n..n + OVERLAP]);
         }
 
@@ -161,11 +178,6 @@ impl CeltEncoder {
         } else {
             (false, 0.0, 0)
         };
-
-        // Pitch pre-filter *analysis* (the decision and state only; the comb
-        // filter and post-filter bitstream coding land in a follow-up, so
-        // the bitstream still codes the post-filter off below).
-        self.prefilter_analysis(&inputs, in_len, n, channels, nb_bytes);
 
         // Forward MDCT(s) per channel, then band energies (log domain
         // relative to eMeans) and unit-norm band shapes. `x` is planar.
@@ -273,9 +285,25 @@ impl CeltEncoder {
         if enc.tell() + 15 <= total_bits {
             enc.encode_bit_logp(false, 15);
         }
-        // Post-filter off.
-        if start == 0 && enc.tell() + 16 <= total_bits {
-            enc.encode_bit_logp(false, 1);
+        // Post-filter parameters. When on, the byte budget that enabled the
+        // pre-filter guarantees the 16-bit gate holds, so they are coded
+        // unconditionally (mirroring the reference); when off, the flag is
+        // gated like the decoder's read.
+        if start == 0 {
+            if pf_on {
+                enc.encode_bit_logp(true, 1);
+                let p = (pitch_index + 1) as u32;
+                // EC_ILOG(p) - 5, where EC_ILOG(p) = 32 - leading_zeros.
+                let octave = (32 - p.leading_zeros()) as i32 - 5;
+                enc.encode_uint(octave as u32, 6);
+                enc.encode_raw_bits(p - (16 << octave), (4 + octave) as u32);
+                enc.encode_raw_bits(qg as u32, 3);
+                if enc.tell() + 2 <= total_bits {
+                    enc.encode_icdf(self.prefilter_tapset, &TAPSET_ICDF, 2);
+                }
+            } else if enc.tell() + 16 <= total_bits {
+                enc.encode_bit_logp(false, 1);
+            }
         }
         // Transient flag.
         if lm > 0 && enc.tell() + 3 <= total_bits {
@@ -499,15 +527,24 @@ impl CeltEncoder {
         (self.last_pitch, self.last_pitch_gain)
     }
 
-    /// Pitch pre-filter analysis (`run_prefilter`, decision path): estimates
-    /// the pitch period/gain, applies the gain threshold and gain
-    /// quantisation, advances the pre-filter history, and records the
-    /// decision. The comb filter itself is not yet applied.
+    /// Pitch pre-filter (`run_prefilter`): estimates the pitch period/gain,
+    /// applies the rate/continuity gain threshold and the 8-level gain
+    /// quantisation, comb-filters `inputs` in place (the FIR whitening, with
+    /// a windowed cross-fade from the previous frame's parameters), advances
+    /// the pre-filter history, and returns `(pf_on, pitch_index, qg)` for the
+    /// bitstream.
     #[allow(
         clippy::needless_range_loop,
         reason = "channel index also addresses prefilter_mem/inputs"
     )]
-    fn prefilter_analysis(&mut self, inputs: &[f32], in_len: usize, n: usize, channels: usize, nb_bytes: usize) {
+    fn prefilter_analysis(
+        &mut self,
+        inputs: &mut [f32],
+        in_len: usize,
+        n: usize,
+        channels: usize,
+        nb_bytes: usize,
+    ) -> (bool, usize, i32) {
         // pre[c] = [prefilter history | this frame's new samples].
         let pre_len = COMBFILTER_MAXPERIOD + n;
         let mut pre = [vec![0.0f32; pre_len], vec![0.0f32; pre_len]];
@@ -557,6 +594,8 @@ impl CeltEncoder {
             pf_threshold -= 0.1;
         }
         pf_threshold = pf_threshold.max(0.2);
+        let mut pf_on = false;
+        let mut qg = 0i32;
         if gain1 < pf_threshold {
             gain1 = 0.0;
         } else {
@@ -565,8 +604,32 @@ impl CeltEncoder {
             if (gain1 - self.prefilter_gain).abs() < 0.1 {
                 gain1 = self.prefilter_gain;
             }
-            let qg = ((0.5 + gain1 * 32.0 / 3.0).floor() as i32 - 1).clamp(0, 7);
+            qg = ((0.5 + gain1 * 32.0 / 3.0).floor() as i32 - 1).clamp(0, 7);
             gain1 = 0.093_75 * (qg + 1) as f32;
+            pf_on = true;
+        }
+
+        // Comb-filter the new samples in place: a FIR whitening reading the
+        // unfiltered `pre` history, cross-fading from the previous frame's
+        // (period, -gain) to this frame's over the overlap. With the standard
+        // mode's `offset == 0` this is a single call over all `n` samples.
+        let old_period = self.prefilter_period.max(COMBFILTER_MINPERIOD);
+        let old_tapset = self.prefilter_tapset;
+        let new_tapset = self.prefilter_tapset;
+        for c in 0..channels {
+            let dst = &mut inputs[c * in_len + OVERLAP..c * in_len + OVERLAP + n];
+            comb_filter_prefilter(
+                dst,
+                &pre[c],
+                COMBFILTER_MAXPERIOD,
+                old_period,
+                pitch_index.max(COMBFILTER_MINPERIOD),
+                n,
+                -self.prefilter_gain,
+                -gain1,
+                old_tapset,
+                new_tapset,
+            );
         }
 
         // Advance the pre-filter history (new = last MAXPERIOD of pre[c]).
@@ -577,6 +640,7 @@ impl CeltEncoder {
         self.prefilter_gain = gain1;
         self.last_pitch = pitch_index;
         self.last_pitch_gain = gain1;
+        (pf_on, pitch_index, qg)
     }
 
     /// `quant_coarse_energy` (float build): time/frequency-predicted,
@@ -805,6 +869,79 @@ fn transient_analysis(inputs: &[f32], len: usize, channels: usize) -> (bool, f32
     let tf_max = 0.0f32.max((27.0 * mask_metric as f32).sqrt() - 42.0);
     let tf_estimate = 0.0f32.max(0.0069 * 163.0f32.min(tf_max) - 0.139).sqrt();
     (is_transient, tf_estimate, tf_chan)
+}
+
+/// The pre-filter comb (`comb_filter`, encoder direction): a 3-tap FIR
+/// whitening `dst[i] = src[base+i] + g·(taps of src around base+i-T)`,
+/// cross-fading from `(t0, g0, tapset0)` to `(t1, g1, tapset1)` over the
+/// MDCT overlap (windowed), then constant. `src` is the *unfiltered* history
+/// plus the new samples, so this is non-recursive (unlike the decoder's
+/// in-place post-filter). Gains are passed negated by the caller.
+#[allow(clippy::too_many_arguments, reason = "mirrors the reference comb_filter signature")]
+fn comb_filter_prefilter(
+    dst: &mut [f32],
+    src: &[f32],
+    base: usize,
+    t0: usize,
+    t1: usize,
+    n: usize,
+    g0: f32,
+    g1: f32,
+    tapset0: usize,
+    tapset1: usize,
+) {
+    if g0 == 0.0 && g1 == 0.0 {
+        dst[..n].copy_from_slice(&src[base..base + n]);
+        return;
+    }
+    let t0 = t0.max(COMBFILTER_MINPERIOD);
+    let t1 = t1.max(COMBFILTER_MINPERIOD);
+    let g00 = g0 * COMB_GAINS[tapset0][0];
+    let g01 = g0 * COMB_GAINS[tapset0][1];
+    let g02 = g0 * COMB_GAINS[tapset0][2];
+    let g10 = g1 * COMB_GAINS[tapset1][0];
+    let g11 = g1 * COMB_GAINS[tapset1][1];
+    let g12 = g1 * COMB_GAINS[tapset1][2];
+
+    // No cross-fade needed when nothing changed.
+    let overlap = if g0 == g1 && t0 == t1 && tapset0 == tapset1 {
+        0
+    } else {
+        OVERLAP.min(n)
+    };
+    let mut x1 = src[base + 1 - t1];
+    let mut x2 = src[base - t1];
+    let mut x3 = src[base - t1 - 1];
+    let mut x4 = src[base - t1 - 2];
+
+    let mut i = 0usize;
+    while i < overlap {
+        let x0 = src[base + i + 2 - t1];
+        let f = WINDOW120[i] * WINDOW120[i];
+        dst[i] = src[base + i]
+            + (1.0 - f) * g00 * src[base + i - t0]
+            + (1.0 - f) * g01 * (src[base + i + 1 - t0] + src[base + i - 1 - t0])
+            + (1.0 - f) * g02 * (src[base + i + 2 - t0] + src[base + i - 2 - t0])
+            + f * g10 * x2
+            + f * g11 * (x1 + x3)
+            + f * g12 * (x0 + x4);
+        x4 = x3;
+        x3 = x2;
+        x2 = x1;
+        x1 = x0;
+        i += 1;
+    }
+    if g1 == 0.0 {
+        dst[overlap..n].copy_from_slice(&src[base + overlap..base + n]);
+        return;
+    }
+    while i < n {
+        dst[i] = src[base + i]
+            + g10 * src[base + i - t1]
+            + g11 * (src[base + i + 1 - t1] + src[base + i - 1 - t1])
+            + g12 * (src[base + i + 2 - t1] + src[base + i - 2 - t1]);
+        i += 1;
+    }
 }
 
 /// `dynalloc_analysis` (float build, non-LFE, no surround, no analysis
