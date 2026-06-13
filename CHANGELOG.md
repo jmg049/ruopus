@@ -8,6 +8,7 @@ All notable changes to this project will be documented in this file.
 - **BREAKING:** the `spectrograms` FFT backend is now a default feature - the default build decodes at ~410-730× realtime (one core) vs ~10× with the built-in evaluation; use `default-features = false` for the zero-dependency build
 
 ### Added
+- SILK encoder: started - modified Burg LPC analysis (`silk_burg_modified_FLP`) with the minimum-inverse-gain stability cap, the first kernel of the speech/low-bitrate encoder (std-gated float build)
 - CELT encoder: unconstrained variable bitrate (`OpusEncoder::set_bitrate`) - a `compute_vbr`-derived per-frame target (dynalloc/transient boost, band-depth floor, 2× cap) with the range coder shrunk to size; achieved rate tracks the target within a few percent
 - CELT encoder: selectable audio bandwidth (narrowband/wideband/super-wideband/fullband) via `OpusEncoder::set_bandwidth`, spanning the CELT-only TOC config range 16-31
 - Public `OpusEncoder` API producing CELT-only Opus packets (TOC + payload) at 48 kHz, mono or stereo - the encode-side counterpart to `OpusDecoder`, with `final_range()` and a typed `EncodeError`

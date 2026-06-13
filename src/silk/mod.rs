@@ -22,6 +22,10 @@
 
 pub mod api;
 pub(crate) mod decoder;
+// The encoder's analysis is the reference float build, so it needs `std`
+// for float math (matching the CELT modules).
+#[cfg(feature = "std")]
+pub(crate) mod encode;
 pub(crate) mod gains;
 pub(crate) mod indices;
 pub(crate) mod lpc;
