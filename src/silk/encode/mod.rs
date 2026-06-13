@@ -15,3 +15,4 @@
 )]
 
 pub(crate) mod lpc;
+pub(crate) mod nlsf;
