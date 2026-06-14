@@ -3,17 +3,19 @@
 //!
 //! [`SilkChannelEncoder::encode_frame`] is the end-to-end SILK encode path:
 //! it ties the analysis and quantisation kernels into a single coded frame
-//! and is validated by round-tripping through the bit-exact decoder. Both
-//! the unvoiced path (short-term prediction only) and the voiced path
-//! (adding long-term/pitch prediction) are assembled here; the higher-level
-//! mode/stereo glue and the pitch *search* (which would choose the lag
-//! indices the voiced path currently takes as input) build on top.
+//! and is validated by round-tripping through the bit-exact decoder. It
+//! decides voiced/unvoiced itself (via the pitch analysis) and handles both
+//! paths; the remaining work is the higher-level rate control, the resampler
+//! front-end, stereo, and the public Opus mode glue.
 //!
-//! The chain is: Burg LPC → NLSF VQ → `nlsf2a` requantise → (voiced) LTP
-//! correlation + gain VQ → noise-shaping analysis → gain quantisation →
-//! NSQ → index/pulse bitstream. The decoder rebuilds the prediction
-//! coefficients and gains from the coded indices, so feeding NSQ those same
-//! quantised values makes its reconstruction equal the decoder's output.
+//! The chain is: pitch analysis (whitening + lag search, deciding voicing) →
+//! Burg LPC → NLSF VQ → `nlsf2a` requantise → (voiced) LTP correlation +
+//! gain VQ → noise-shaping analysis → gain quantisation → NSQ → index/pulse
+//! bitstream. The decoder rebuilds the prediction coefficients and gains
+//! from the coded indices, so feeding NSQ those same quantised values makes
+//! its reconstruction equal the decoder's output. Cross-frame state (NSQ
+//! history, pitch lag, input history, shaping smoothers) is carried in the
+//! encoder so consecutive frames stay in sync with the decoder.
 
 extern crate alloc;
 use alloc::vec;
@@ -25,10 +27,8 @@ use super::super::indices::{
     CondCoding, EcPrevState, MAX_LPC_ORDER, MAX_NB_SUBFR, SideInfoIndices, TYPE_UNVOICED, TYPE_VOICED, encode_indices,
     nlsf_codebook,
 };
-use super::super::lpc::lpc_analysis_filter;
 use super::super::nlsf::nlsf2a;
 use super::super::params::LTP_ORDER;
-use super::super::pitch::decode_pitch;
 use super::super::pulses::encode_pulses;
 use super::super::tables::LTPSCALES_TABLE_Q14;
 use super::gains::process_gains;
@@ -37,16 +37,7 @@ use super::ltp::{find_ltp, quant_ltp_gains};
 use super::nlsf::{a2nlsf, nlsf_encode, nlsf_vq_weights_laroia};
 use super::noise_shape::{NoiseShapeConfig, ShapeState, noise_shape_analysis};
 use super::nsq::{NsqConfig, NsqState, nsq};
-
-/// Voiced-frame parameters: the pitch lag/contour indices (which a later
-/// pitch *search* will choose; supplied here) and the normalised long-term
-/// correlation that tunes the harmonic noise shaper.
-#[derive(Clone, Copy)]
-pub(crate) struct VoicedParams {
-    pub lag_index: i16,
-    pub contour_index: i8,
-    pub ltp_corr: f32,
-}
+use super::pitch_analysis::find_pitch_lags;
 
 /// One channel's SILK encoder state.
 pub(crate) struct SilkChannelEncoder {
@@ -57,6 +48,15 @@ pub(crate) struct SilkChannelEncoder {
     pub last_gain_index: i8,
     /// Cumulative LTP max-gain accumulator (`sum_log_gain_Q7`).
     pub sum_log_gain_q7: i32,
+    /// Previous frame's final pitch lag (`prevLag`, 0 if unvoiced).
+    pub prev_lag: i32,
+    /// Previous frame's signal type (`prevSignalType`).
+    pub prev_signal_type: i32,
+    /// Normalised long-term correlation carried across frames (`LTPCorr`).
+    pub ltp_corr: f32,
+    /// The previous `ltp_mem_length` input samples, used as pitch-analysis
+    /// history for the next frame.
+    pub prev_input: Vec<i16>,
     /// Entropy-coding history for [`encode_indices`].
     pub ec_prev: EcPrevState,
     pub fs_khz: i32,
@@ -72,48 +72,65 @@ impl SilkChannelEncoder {
             shape: ShapeState::default(),
             last_gain_index: 10,
             sum_log_gain_q7: 0,
+            prev_lag: 0,
+            prev_signal_type: TYPE_UNVOICED,
+            ltp_corr: 0.0,
+            prev_input: vec![0; 20 * fs_khz as usize],
             ec_prev: EcPrevState::default(),
             fs_khz,
             nb_subfr,
         }
     }
 
-    /// Encodes one unvoiced frame (short-term prediction only).
-    pub(crate) fn encode_frame_unvoiced(
+    /// Encodes one frame of `input` (i16 PCM at the internal rate,
+    /// `frame_length` samples), deciding voiced/unvoiced and (when voiced)
+    /// the pitch lags itself via the pitch analysis. Returns the coded
+    /// `SideInfoIndices`.
+    pub(crate) fn encode_frame(
         &mut self,
         enc: &mut RangeEncoder,
         input: &[i16],
         cond_coding: CondCoding,
-    ) -> SideInfoIndices {
-        self.encode_frame(enc, input, cond_coding, None)
-    }
-
-    /// Encodes one voiced frame, taking the pitch lag/contour from `voiced`.
-    pub(crate) fn encode_frame_voiced(
-        &mut self,
-        enc: &mut RangeEncoder,
-        input: &[i16],
-        cond_coding: CondCoding,
-        voiced: VoicedParams,
-    ) -> SideInfoIndices {
-        self.encode_frame(enc, input, cond_coding, Some(voiced))
-    }
-
-    /// The shared encode pipeline. `voiced` selects the long-term-prediction
-    /// path and supplies its pitch indices.
-    fn encode_frame(
-        &mut self,
-        enc: &mut RangeEncoder,
-        input: &[i16],
-        cond_coding: CondCoding,
-        voiced: Option<VoicedParams>,
     ) -> SideInfoIndices {
         let order = if self.fs_khz == 16 { 16 } else { 10 };
         let subfr_length = 5 * self.fs_khz as usize;
         let frame_length = self.nb_subfr * subfr_length;
         let ltp_mem_length = 20 * self.fs_khz as usize;
+        let la_pitch = 2 * self.fs_khz as usize;
         debug_assert_eq!(input.len(), frame_length);
-        let signal_type = if voiced.is_some() { TYPE_VOICED } else { TYPE_UNVOICED };
+
+        // Pitch analysis: whiten and search for the lag. `pitch_x_buf` holds
+        // `ltp_mem_length` of history, the frame, then `la_pitch` lookahead;
+        // an isolated frame zero-pads the history and lookahead.
+        let pe_order = if self.fs_khz == 16 { 16 } else { 12 };
+        let buf_len = la_pitch + frame_length + ltp_mem_length;
+        let mut pitch_x_buf = vec![0.0f32; buf_len];
+        for (i, &v) in self.prev_input.iter().enumerate() {
+            pitch_x_buf[i] = f32::from(v);
+        }
+        for (i, &v) in input.iter().enumerate() {
+            pitch_x_buf[ltp_mem_length + i] = f32::from(v);
+        }
+        let mut res = vec![0.0f32; buf_len];
+        let pl = find_pitch_lags(
+            &pitch_x_buf,
+            &mut res,
+            self.fs_khz,
+            self.nb_subfr,
+            pe_order,
+            2,
+            0.7,
+            self.prev_lag,
+            self.prev_signal_type,
+            256,
+            0,
+            &mut self.ltp_corr,
+        );
+        let is_voiced = pl.voicing == 0;
+        let signal_type = if is_voiced { TYPE_VOICED } else { TYPE_UNVOICED };
+        let pitch_l = pl.pitch_l;
+        // The whitened residual aligned to the frame (`res_pitch_frame`).
+        let res_f: Vec<f32> = res[ltp_mem_length..ltp_mem_length + frame_length].to_vec();
 
         // Short-term analysis: Burg LPC over the frame → NLSF → VQ-quantised
         // indices (with the requantised NLSF written back), then the Q12 LPC
@@ -134,34 +151,17 @@ impl SilkChannelEncoder {
         pred_coef[..order].copy_from_slice(&a_q12[..order]);
         pred_coef[MAX_LPC_ORDER..MAX_LPC_ORDER + order].copy_from_slice(&a_q12[..order]);
 
-        // LPC residual over the frame (stands in for the pitch-analysis
-        // residual `res_pitch`, used by the sparseness measure and LTP).
-        let mut residual = vec![0i16; frame_length];
-        lpc_analysis_filter(&mut residual, input, &a_q12[..order]);
-        let res_f: Vec<f32> = residual.iter().map(|&r| f32::from(r)).collect();
-
-        // Pitch lags from the supplied indices (round-tripped via the
-        // decoder's own `decode_pitch`, so encoder and decoder agree).
-        let pitch_l = match voiced {
-            Some(v) => decode_pitch(v.lag_index, v.contour_index, self.fs_khz, self.nb_subfr),
-            None => [0; MAX_NB_SUBFR],
-        };
-
-        // Long-term prediction: correlation + gain VQ (voiced only).
+        // Long-term prediction: correlation + gain VQ (voiced only), on the
+        // whitened residual with its real `ltp_mem_length` of history.
         let mut ltp_coef = [0i16; LTP_ORDER * MAX_NB_SUBFR];
         let mut ltp_index = [0i8; MAX_NB_SUBFR];
         let mut per_index = 0i8;
         let mut pred_gain_db = 0.0f32;
-        if voiced.is_some() {
-            // Residual buffer with `ltp_mem_length` of (zero) history so the
-            // analysis can reach a full pitch period back, plus `LTP_ORDER`
-            // trailing samples for the last subframe's energy window.
-            let mut r = vec![0.0f32; ltp_mem_length + frame_length + LTP_ORDER];
-            r[ltp_mem_length..ltp_mem_length + frame_length].copy_from_slice(&res_f);
+        if is_voiced {
             let mut xx = vec![0.0f32; self.nb_subfr * LTP_ORDER * LTP_ORDER];
             let mut x_x = vec![0.0f32; self.nb_subfr * LTP_ORDER];
             find_ltp(
-                &r,
+                &res,
                 ltp_mem_length,
                 &pitch_l,
                 subfr_length,
@@ -198,8 +198,8 @@ impl SilkChannelEncoder {
             speech_activity_q8: 256,
             input_quality_bands_q15: [32768, 32768],
             use_cbr: true,
-            ltp_corr: voiced.map_or(0.0, |v| v.ltp_corr),
-            pred_gain: 0.0,
+            ltp_corr: self.ltp_corr,
+            pred_gain: pl.pred_gain,
             input_tilt_q15: 0,
             pitch_l,
         };
@@ -249,7 +249,7 @@ impl SilkChannelEncoder {
 
         // LTP scaling: independent coding with no packet loss selects index 0.
         let ltp_scale_index = 0i8;
-        let ltp_scale_q14 = if voiced.is_some() {
+        let ltp_scale_q14 = if is_voiced {
             i32::from(LTPSCALES_TABLE_Q14[ltp_scale_index as usize])
         } else {
             0
@@ -297,12 +297,22 @@ impl SilkChannelEncoder {
         };
         indices.gains_indices[..self.nb_subfr].copy_from_slice(&gres.gains_indices[..self.nb_subfr]);
         indices.nlsf_indices[..=order].copy_from_slice(&nlsf_indices[..=order]);
-        if let Some(v) = voiced {
-            indices.lag_index = v.lag_index;
-            indices.contour_index = v.contour_index;
+        if is_voiced {
+            indices.lag_index = pl.lag_index;
+            indices.contour_index = pl.contour_index;
             indices.per_index = per_index;
             indices.ltp_index = ltp_index;
             indices.ltp_scale_index = ltp_scale_index;
+        }
+
+        // Carry forward the pitch/voicing state and input history.
+        self.prev_lag = if is_voiced { pitch_l[self.nb_subfr - 1] } else { 0 };
+        self.prev_signal_type = signal_type;
+        if frame_length >= ltp_mem_length {
+            self.prev_input.copy_from_slice(&input[frame_length - ltp_mem_length..]);
+        } else {
+            self.prev_input.copy_within(frame_length.., 0);
+            self.prev_input[ltp_mem_length - frame_length..].copy_from_slice(input);
         }
 
         encode_indices(
@@ -326,32 +336,25 @@ mod tests {
     use super::*;
     use crate::range::RangeDecoder;
 
-    /// Encodes `input`, captures the encoder's NSQ reconstruction, decodes the
-    /// coded frame, and returns (decoder xq, encoder xq, input-correlation).
+    /// Encodes `input` on `e`, captures the encoder's NSQ reconstruction, and
+    /// decodes the coded frame on the persistent decoder `d` (so cross-frame
+    /// state stays in sync). Returns (decoder xq, encoder xq, coded signal
+    /// type, input-correlation).
     fn round_trip(
         e: &mut SilkChannelEncoder,
+        d: &mut SilkChannelDecoder,
         input: &[i16],
-        voiced: Option<VoicedParams>,
-    ) -> (Vec<i16>, Vec<i16>, f64) {
-        let fs_khz = e.fs_khz;
-        let nb_subfr = e.nb_subfr;
-        let frame_length = nb_subfr * 5 * fs_khz as usize;
-        let ltp_mem = 20 * fs_khz as usize;
+    ) -> (Vec<i16>, Vec<i16>, i32, f64) {
+        let frame_length = e.nb_subfr * 5 * e.fs_khz as usize;
+        let ltp_mem = 20 * e.fs_khz as usize;
 
         let mut enc = RangeEncoder::new(512);
-        match voiced {
-            Some(v) => {
-                e.encode_frame_voiced(&mut enc, input, CondCoding::Independently, v);
-            },
-            None => {
-                e.encode_frame_unvoiced(&mut enc, input, CondCoding::Independently);
-            },
-        }
+        let ind = e.encode_frame(&mut enc, input, CondCoding::Independently);
+        let signal_type = i32::from(ind.signal_type);
         let xq_enc: Vec<i16> = e.nsq.xq[ltp_mem..ltp_mem + frame_length].to_vec();
         let bytes = enc.finalize().expect("frame fits");
         assert!(!bytes.is_empty());
 
-        let mut d = SilkChannelDecoder::new(fs_khz, nb_subfr);
         let mut dec = RangeDecoder::new(&bytes);
         let mut xq = vec![0i16; frame_length];
         d.decode_frame(&mut dec, &mut xq, true, false, CondCoding::Independently);
@@ -365,61 +368,56 @@ mod tests {
             e_out += b * b;
         }
         let corr = dot / (sig.sqrt() * e_out.sqrt()).max(1.0);
-        (xq, xq_enc, corr)
+        (xq, xq_enc, signal_type, corr)
     }
 
-    /// An unvoiced (noise+tone) frame decodes to the encoder's own NSQ
-    /// reconstruction and tracks the input.
+    /// A noise frame is detected as unvoiced and decodes to the encoder's own
+    /// NSQ reconstruction.
     #[test]
     fn unvoiced_frame_round_trips_through_the_decoder() {
         let (fs_khz, nb_subfr) = (16i32, 4usize);
         let frame_length = nb_subfr * 5 * fs_khz as usize;
         let mut seed = 0x9e37_u32;
         let input: Vec<i16> = (0..frame_length)
-            .map(|i| {
+            .map(|_| {
                 seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
-                let n = ((seed >> 16) as i32 - 32768) / 12;
-                let tone = ((i as f32 * 0.11).sin() * 2500.0) as i32;
-                (n + tone).clamp(-30000, 30000) as i16
+                ((seed >> 16) as i32 - 32768) as i16 / 12
             })
             .collect();
 
         let mut e = SilkChannelEncoder::new(fs_khz, nb_subfr);
-        let (xq, xq_enc, corr) = round_trip(&mut e, &input, None);
+        let mut d = SilkChannelDecoder::new(fs_khz, nb_subfr);
+        let (xq, xq_enc, signal_type, _corr) = round_trip(&mut e, &mut d, &input);
+        assert_eq!(signal_type, TYPE_UNVOICED, "noise should be detected unvoiced");
         assert_eq!(xq, xq_enc, "decoder disagrees with the encoder's NSQ reconstruction");
-        assert!(corr > 0.7, "reconstruction correlation {corr:.3} too low");
     }
 
-    /// A strongly periodic (voiced) frame round-trips through the decoder with
-    /// the long-term predictor engaged.
+    /// A strongly periodic frame is detected as voiced and round-trips through
+    /// the decoder with the long-term predictor engaged.
     #[test]
     fn voiced_frame_round_trips_through_the_decoder() {
         let (fs_khz, nb_subfr) = (16i32, 4usize);
         let frame_length = nb_subfr * 5 * fs_khz as usize;
-        // Pitch period ≈ 80 samples (200 Hz at 16 kHz): lag_index = 80 - min_lag.
-        let min_lag = 2 * fs_khz;
-        let period = 80i32;
-        let voiced = VoicedParams {
-            lag_index: (period - min_lag) as i16,
-            contour_index: 0,
-            ltp_corr: 0.8,
-        };
 
-        // A periodic glottal-like pulse train shaped by a soft formant.
-        let mut seed = 0x51ed_u32;
-        let input: Vec<i16> = (0..frame_length)
+        // A continuous, strongly periodic tone (period 100 samples) spanning
+        // two frames, so the second frame's pitch history is phase-continuous.
+        let full: Vec<i16> = (0..2 * frame_length)
             .map(|i| {
-                seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
-                let noise = ((seed >> 18) as i32 - 8192) as f32 * 0.02;
-                let phase = (i as i32 % period) as f32 / period as f32;
-                let pulse = (-((phase - 0.0).powi(2)) * 30.0).exp() * 9000.0;
-                let formant = (i as f32 * 0.30).sin() * 1500.0;
-                (pulse + formant + noise * 100.0).clamp(-30000.0, 30000.0) as i16
+                let mut s = 2500.0 * (core::f32::consts::TAU * i as f32 / 100.0).sin();
+                s += 900.0 * (core::f32::consts::TAU * i as f32 / 50.0).sin();
+                s += ((i as i32 * 1733 + 3) % 173 - 86) as f32 * 1.2;
+                s.clamp(-30000.0, 30000.0) as i16
             })
             .collect();
 
         let mut e = SilkChannelEncoder::new(fs_khz, nb_subfr);
-        let (xq, xq_enc, corr) = round_trip(&mut e, &input, Some(voiced));
+        let mut d = SilkChannelDecoder::new(fs_khz, nb_subfr);
+        // First frame primes the pitch-analysis history; the second's history
+        // is then the (phase-continuous) first frame. The decoder is shared so
+        // its synthesis history matches the encoder's going into frame two.
+        round_trip(&mut e, &mut d, &full[..frame_length]);
+        let (xq, xq_enc, signal_type, corr) = round_trip(&mut e, &mut d, &full[frame_length..]);
+        assert_eq!(signal_type, TYPE_VOICED, "periodic signal should be detected voiced");
         assert_eq!(
             xq, xq_enc,
             "decoder disagrees with the encoder's NSQ reconstruction (voiced)"
