@@ -5,8 +5,10 @@
 //! The decoder upsamples the internal 8/12/16 kHz signal to the API rate:
 //! a 2× allpass upsampler (three second-order allpass sections per phase
 //! plus a notch), optionally followed by fractional FIR interpolation for
-//! non-power-of-two ratios. Equal rates copy through. Downsampling paths
-//! (`down_FIR`, `AR2`) are encoder-side and not ported.
+//! non-power-of-two ratios. Equal rates copy through. The downsampling paths
+//! (`down_FIR` over an `AR2` prefilter) serve both the decoder's higher-rate
+//! outputs and the encoder front-end ([`Resampler::new_enc`], API rate →
+//! internal rate, including the 1:3/1:4/1:6 ratios).
 
 #![allow(dead_code, reason = "consumed incrementally as the SILK decoder stages land")]
 
@@ -54,8 +56,25 @@ const COEFS_2_3: [i16; 20] = [
 const COEFS_1_2: [i16; 14] = [
     616, -14323, -10, 39, 58, -46, -84, 120, 184, -315, -541, 1284, 5380, 9024,
 ];
+
+/// `silk_Resampler_1_3_COEFS`: 2 AR2 taps then the 18 symmetric FIR taps
+/// (`RESAMPLER_DOWN_ORDER_FIR2` = 36). Encoder front-end (48→16, 24→8).
+const COEFS_1_3: [i16; 20] = [
+    16102, -15162, -13, 0, 20, 26, 5, -31, -43, -4, 65, 90, 7, -157, -248, -44, 593, 1583, 2612, 3271,
+];
+/// `silk_Resampler_1_4_COEFS` (48→12).
+const COEFS_1_4: [i16; 20] = [
+    22500, -15099, 3, -14, -20, -15, 2, 25, 37, 25, -16, -71, -107, -79, 50, 292, 623, 982, 1288, 1464,
+];
+/// `silk_Resampler_1_6_COEFS` (48→8).
+const COEFS_1_6: [i16; 20] = [
+    27540, -15257, 17, 12, 8, 1, -10, -22, -30, -32, -22, 3, 44, 100, 168, 243, 317, 381, 429, 455,
+];
+
 /// `delay_matrix_dec[in][out]` over rates [8, 12, 16] × [8, 12, 16, 24, 48].
 const DELAY_MATRIX_DEC: [[i8; 5]; 3] = [[4, 0, 2, 0, 0], [0, 9, 4, 7, 4], [0, 3, 12, 7, 7]];
+/// `delay_matrix_enc[in][out]` over rates [8, 12, 16, 24, 48] × [8, 12, 16].
+const DELAY_MATRIX_ENC: [[i8; 3]; 5] = [[6, 0, 3], [0, 7, 3], [0, 1, 10], [0, 2, 6], [18, 10, 12]];
 
 /// `rateID`: [8000, 12000, 16000, 24000, 48000] → 0..=4.
 const fn rate_id(r: i32) -> usize {
@@ -152,6 +171,89 @@ impl Resampler {
             coefs,
             delay_buf: [0; 48],
             input_delay: DELAY_MATRIX_DEC[rate_id(fs_hz_in)][rate_id(fs_hz_out)] as usize,
+            fs_in_khz,
+            fs_out_khz: (fs_hz_out / 1000) as usize,
+            batch_size: fs_in_khz * MAX_BATCH_SIZE_MS,
+            inv_ratio_q16,
+            method,
+        }
+    }
+
+    /// `silk_resampler_init(forEnc=1)`: the encoder front-end resampler,
+    /// converting the API rate `fs_hz_in` ∈ {8,12,16,24,48} kHz to the
+    /// internal rate `fs_hz_out` ∈ {8,12,16} kHz. Adds the 1:3/1:4/1:6 down
+    /// ratios the decoder direction never needs and uses the encoder delay
+    /// table.
+    #[must_use]
+    pub fn new_enc(fs_hz_in: i32, fs_hz_out: i32) -> Self {
+        assert!(
+            matches!(fs_hz_in, 8000 | 12000 | 16000 | 24000 | 48000),
+            "unsupported encoder input rate {fs_hz_in}"
+        );
+        assert!(
+            fs_hz_out == 8000 || fs_hz_out == 12000 || fs_hz_out == 16000,
+            "encoder output rate"
+        );
+
+        let mut fir_order = 0usize;
+        let mut fir_fracs = 0i32;
+        let mut coefs: &'static [i16] = &[];
+        let method = if fs_hz_out == fs_hz_in {
+            Method::Copy
+        } else if fs_hz_out == 2 * fs_hz_in {
+            Method::Up2Hq
+        } else if fs_hz_out > fs_hz_in {
+            Method::IirFir
+        } else if fs_hz_out * 4 == fs_hz_in * 3 {
+            fir_fracs = 3;
+            fir_order = 18;
+            coefs = &COEFS_3_4;
+            Method::DownFir
+        } else if fs_hz_out * 3 == fs_hz_in * 2 {
+            fir_fracs = 2;
+            fir_order = 18;
+            coefs = &COEFS_2_3;
+            Method::DownFir
+        } else if fs_hz_out * 2 == fs_hz_in {
+            fir_fracs = 1;
+            fir_order = 24;
+            coefs = &COEFS_1_2;
+            Method::DownFir
+        } else if fs_hz_out * 3 == fs_hz_in {
+            fir_fracs = 1;
+            fir_order = 36; // RESAMPLER_DOWN_ORDER_FIR2
+            coefs = &COEFS_1_3;
+            Method::DownFir
+        } else if fs_hz_out * 4 == fs_hz_in {
+            fir_fracs = 1;
+            fir_order = 36;
+            coefs = &COEFS_1_4;
+            Method::DownFir
+        } else if fs_hz_out * 6 == fs_hz_in {
+            fir_fracs = 1;
+            fir_order = 36;
+            coefs = &COEFS_1_6;
+            Method::DownFir
+        } else {
+            panic!("unsupported encoder rate pair {fs_hz_in}->{fs_hz_out}");
+        };
+        let up2x = i32::from(method == Method::IirFir);
+
+        let mut inv_ratio_q16 = ((fs_hz_in << (14 + up2x)) / fs_hz_out) << 2;
+        while smulww(inv_ratio_q16, fs_hz_out) < (fs_hz_in << up2x) {
+            inv_ratio_q16 += 1;
+        }
+
+        let fs_in_khz = (fs_hz_in / 1000) as usize;
+        Resampler {
+            s_iir: [0; 6],
+            s_fir: [0; ORDER_FIR_12],
+            s_fir32: [0; 36],
+            fir_order,
+            fir_fracs,
+            coefs,
+            delay_buf: [0; 48],
+            input_delay: DELAY_MATRIX_ENC[rate_id(fs_hz_in)][rate_id(fs_hz_out)] as usize,
             fs_in_khz,
             fs_out_khz: (fs_hz_out / 1000) as usize,
             batch_size: fs_in_khz * MAX_BATCH_SIZE_MS,
@@ -310,18 +412,19 @@ impl Resampler {
                         }
                         r
                     },
-                    24 => {
-                        let mut r = smulwb(buf[base].wrapping_add(buf[base + 23]), i32::from(fir_coefs[0]));
-                        for t in 1..12 {
+                    // Symmetric half-table (FIR1 = 24, FIR2 = 36).
+                    _ => {
+                        let half = ord / 2;
+                        let mut r = smulwb(buf[base].wrapping_add(buf[base + ord - 1]), i32::from(fir_coefs[0]));
+                        for t in 1..half {
                             r = smlawb(
                                 r,
-                                buf[base + t].wrapping_add(buf[base + 23 - t]),
+                                buf[base + t].wrapping_add(buf[base + ord - 1 - t]),
                                 i32::from(fir_coefs[t]),
                             );
                         }
                         r
                     },
-                    _ => unreachable!("down-FIR order"),
                 };
                 out[out_off] = rshift_round(res_q6, 6).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
                 out_off += 1;
@@ -528,6 +631,80 @@ mod tests {
                 r.process(&mut out, &input);
                 assert_eq!(&out[..12], *want_head, "{fs_in}->{fs_out} frame {frame} head");
                 assert_eq!(&out[out_len - 3..], *want_tail, "{fs_in}->{fs_out} frame {frame} tail");
+            }
+        }
+    }
+
+    /// Encoder front-end resampler (`silk_resampler_init` forEnc=1), pinned
+    /// against the compiled reference over three consecutive 20 ms frames.
+    /// For each frame: the first 8 output samples, then the last 4.
+    #[test]
+    fn encoder_matches_reference_pins() {
+        #[allow(clippy::type_complexity, reason = "pin fixture")]
+        let cases: [(i32, i32, [([i16; 8], [i16; 4]); 3]); 3] = [
+            (
+                48000,
+                16000,
+                [
+                    ([0, 0, 0, 0, 0, -1, 1, 0], [-7861, -8220, -8024, -7462]),
+                    (
+                        [-7189, -7143, -6513, -5574, -4923, -4546, -3620, -2398],
+                        [-8264, -7881, -7697, -7777],
+                    ),
+                    (
+                        [-7615, -6782, -6206, -5872, -5363, -4175, -3317, -2707],
+                        [-7770, -7807, -8087, -7763],
+                    ),
+                ],
+            ),
+            (
+                24000,
+                16000,
+                [
+                    ([0, 0, 0, 0, 0, -1, 5, 2], [-7872, -8435, -8112, -7843]),
+                    (
+                        [-7398, -6869, -6268, -5492, -4953, -4759, -3712, -2794],
+                        [-7934, -7777, -7572, -7709],
+                    ),
+                    (
+                        [-7784, -7019, -6570, -5708, -5050, -4034, -3438, -3072],
+                        [-8162, -8025, -7834, -7520],
+                    ),
+                ],
+            ),
+            (
+                16000,
+                16000,
+                [
+                    ([0, 0, 0, 0, 0, 0, 0, 0], [-7595, -8347, -8187, -7917]),
+                    (
+                        [-7541, -7061, -6486, -5820, -5073, -4254, -3373, -2442],
+                        [-8291, -8241, -8081, -7811],
+                    ),
+                    (
+                        [-7435, -6955, -6380, -5714, -4967, -4148, -3267, -3138],
+                        [-8185, -8135, -7975, -7705],
+                    ),
+                ],
+            ),
+        ];
+
+        for (fs_in, fs_out, frames) in cases {
+            let mut r = Resampler::new_enc(fs_in, fs_out);
+            let in_len = (fs_in / 1000 * 20) as usize;
+            let out_len = (fs_out / 1000 * 20) as usize;
+            for (frame, (want_head, want_tail)) in frames.iter().enumerate() {
+                let input: Vec<i16> = (0..in_len)
+                    .map(|i| {
+                        let n = (frame * in_len + i) as f64;
+                        let s = 8000.0 * (core::f64::consts::TAU * n / (f64::from(fs_in) / 300.0)).sin();
+                        (s + ((n as i64 * 1237 + 11).rem_euclid(401) - 200) as f64 * 2.0) as i16
+                    })
+                    .collect();
+                let mut out = vec![0i16; out_len];
+                r.process(&mut out, &input);
+                assert_eq!(&out[..8], want_head, "{fs_in}->{fs_out} frame {frame} head");
+                assert_eq!(&out[out_len - 4..], want_tail, "{fs_in}->{fs_out} frame {frame} tail");
             }
         }
     }
