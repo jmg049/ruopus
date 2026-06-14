@@ -17,6 +17,7 @@
 pub(crate) mod frame;
 pub(crate) mod gains;
 pub(crate) mod lpc;
+pub(crate) mod ltp;
 pub(crate) mod nlsf;
 pub(crate) mod noise_shape;
 pub(crate) mod nsq;
