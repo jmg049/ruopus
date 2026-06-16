@@ -439,6 +439,79 @@ mod tests {
     use crate::OpusDecoder;
     use alloc::vec::Vec;
 
+    /// Exercise the full encode surface with pathological signals - silence,
+    /// DC, full-scale, impulses, white-ish noise, decorrelated stereo - across
+    /// every mode, both channel counts, and a range of frame sizes and rates.
+    /// Every packet must encode without panicking and round-trip through
+    /// `OpusDecoder` finishing on the encoder's exact range state. This guards
+    /// the arithmetic-edge bug class (e.g. voiced-only index underflows that a
+    /// simple sine never reaches).
+    #[test]
+    fn stress_pathological_signals_round_trip_in_every_mode() {
+        // Deterministic LCG so the "noise" is reproducible without rand.
+        let mut seed = 0x1234_5678u32;
+        let mut noise = move || {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            (seed >> 9) as f32 / f32::from(u16::MAX) - 0.5
+        };
+
+        // (name, generator: |channel, global sample index| -> sample)
+        type Gen = fn(usize, usize) -> f32;
+        let kinds: [(&str, Gen); 6] = [
+            ("silence", |_, _| 0.0),
+            ("dc", |_, _| 0.4),
+            ("full_scale", |_, i| if i % 2 == 0 { 0.999 } else { -0.999 }),
+            ("impulses", |_, i| if i % 137 == 0 { 0.95 } else { 0.0 }),
+            ("tone", |ch, i| {
+                let t = i as f32 / 48_000.0;
+                let ph = if ch == 1 { 0.7 } else { 0.0 };
+                0.5 * (2.0 * core::f32::consts::PI * 220.0 * t + ph).sin()
+            }),
+            // placeholder; real noise injected below via the closure
+            ("noise", |_, _| 0.0),
+        ];
+
+        for channels in [1usize, 2] {
+            for &(spf, bw, rate) in &[
+                (480usize, Bandwidth::WideBand, 16_000u32), // SILK 10 ms
+                (960, Bandwidth::WideBand, 16_000),         // SILK 20 ms
+                (1920, Bandwidth::NarrowBand, 16_000),      // SILK 40 ms
+                (480, Bandwidth::FullBand, 32_000),         // hybrid 10 ms
+                (960, Bandwidth::SuperWideBand, 32_000),    // hybrid 20 ms
+                (240, Bandwidth::FullBand, 64_000),         // CELT 5 ms
+            ] {
+                for (name, make) in &kinds {
+                    let mut enc = OpusEncoder::new(channels);
+                    enc.set_bandwidth(bw);
+                    enc.set_bitrate(Some(rate));
+                    let mut dec = OpusDecoder::new(channels);
+                    for f in 0..4 {
+                        let mut pcm = Vec::with_capacity(spf * channels);
+                        for i in 0..spf {
+                            let gi = f * spf + i;
+                            for ch in 0..channels {
+                                let s = if *name == "noise" { noise() } else { make(ch, gi) };
+                                pcm.push(s);
+                            }
+                        }
+                        let packet = enc
+                            .encode_auto(&pcm, 1275)
+                            .unwrap_or_else(|e| panic!("{name} ch={channels} spf={spf} bw={bw:?}: {e:?}"));
+                        let out = dec
+                            .decode_packet(&packet)
+                            .unwrap_or_else(|e| panic!("{name} decode ch={channels} spf={spf}: {e:?}"));
+                        assert_eq!(out.len(), spf * channels);
+                        assert_eq!(
+                            dec.final_range(),
+                            enc.final_range(),
+                            "range mismatch {name} ch={channels} spf={spf} bw={bw:?} frame {f}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// A SILK-mode Opus packet decodes through `OpusDecoder` with the final
     /// range matching (no redundancy misfire) and the output tracking the
     /// input, across narrowband/mediumband/wideband and several frame sizes.
