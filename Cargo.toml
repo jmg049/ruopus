@@ -65,6 +65,10 @@ required-features = ["std"]
 name = "silk_check"
 required-features = ["std"]
 
+[[example]]
+name = "encoder_quality"
+required-features = ["std"]
+
 [lints.rust]
 missing_docs = "warn"
 unsafe_code = "forbid"
