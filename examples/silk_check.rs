@@ -66,6 +66,37 @@ fn run_stereo(bw: Bandwidth, frame_ms: usize, bit_path: &str) -> usize {
     mismatches
 }
 
+fn run_hybrid(bw: Bandwidth, bit_path: &str) -> usize {
+    let spf = 960usize; // 20 ms
+    let mut enc = OpusEncoder::new(1);
+    enc.set_bandwidth(bw);
+    enc.set_bitrate(Some(32_000));
+    let mut dec = OpusDecoder::new(1);
+    let mut bit = Vec::new();
+    let mut mismatches = 0usize;
+    for f in 0..100 {
+        let pcm: Vec<f32> = (0..spf)
+            .map(|i| {
+                let t = (f * spf + i) as f32 / 48_000.0;
+                0.3 * (2.0 * std::f32::consts::PI * 300.0 * t).sin()
+                    + 0.15 * (2.0 * std::f32::consts::PI * 9000.0 * t).sin()
+            })
+            .collect();
+        let packet = enc.encode_hybrid(&pcm, 1275).expect("encode_hybrid");
+        let out = dec.decode_packet(&packet).expect("decode");
+        assert_eq!(out.len(), spf);
+        if dec.final_range() != enc.final_range() {
+            mismatches += 1;
+        }
+        bit.extend_from_slice(&(packet.len() as u32).to_be_bytes());
+        bit.extend_from_slice(&enc.final_range().to_be_bytes());
+        bit.extend_from_slice(&packet);
+    }
+    std::fs::write(bit_path, &bit).unwrap();
+    println!("{bw:?} 20ms hybrid -> {bit_path}: {mismatches} range mismatches");
+    mismatches
+}
+
 fn main() {
     let mut bad = 0;
     bad += run(Bandwidth::WideBand, 20, "/tmp/ours_silk_wb.bit");
@@ -73,6 +104,8 @@ fn main() {
     bad += run(Bandwidth::NarrowBand, 20, "/tmp/ours_silk_nb.bit");
     bad += run(Bandwidth::WideBand, 40, "/tmp/ours_silk_wb40.bit");
     bad += run_stereo(Bandwidth::WideBand, 20, "/tmp/ours_silk_wb_st.bit");
+    bad += run_hybrid(Bandwidth::SuperWideBand, "/tmp/ours_hybrid_swb.bit");
+    bad += run_hybrid(Bandwidth::FullBand, "/tmp/ours_hybrid_fb.bit");
     println!("total range mismatches: {bad}");
     assert_eq!(bad, 0, "self round-trip range mismatches");
 }
