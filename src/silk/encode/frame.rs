@@ -95,6 +95,22 @@ impl SilkChannelEncoder {
         self.target_rate_bps = bps;
     }
 
+    /// Resets the prediction memory for the first coded side frame after a
+    /// mid-only stretch, mirroring the decoder's `reset_side_prediction`.
+    pub(crate) fn reset_side_prediction(&mut self) {
+        self.nsq = NsqState::new();
+        self.nsq.lag_prev = 100;
+        self.shape = ShapeState::default();
+        self.last_gain_index = 10;
+        self.sum_log_gain_q7 = 0;
+        self.prev_lag = 0;
+        self.prev_signal_type = TYPE_UNVOICED;
+        self.ltp_corr = 0.0;
+        for v in &mut self.prev_input {
+            *v = 0;
+        }
+    }
+
     /// Encodes one frame of `input` (i16 PCM at the internal rate,
     /// `frame_length` samples), deciding voiced/unvoiced and (when voiced)
     /// the pitch lags itself via the pitch analysis. Returns the coded
