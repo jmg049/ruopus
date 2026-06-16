@@ -65,6 +65,14 @@ pub struct OpusEncoder {
         i32,
         usize,
     )>,
+    /// Stereo SILK encoder + per-channel input resamplers (created lazily).
+    silk_stereo: Option<(
+        crate::silk::encode::api::SilkStereoEncoder,
+        crate::silk::resampler::Resampler,
+        crate::silk::resampler::Resampler,
+        i32,
+        usize,
+    )>,
     /// Target bitrate (bps) for the SILK path; `None` uses a default.
     target_bitrate: Option<u32>,
     /// Range state after the last packet, from whichever coder produced it.
@@ -85,6 +93,7 @@ impl OpusEncoder {
             channels,
             bandwidth: Bandwidth::FullBand,
             silk: None,
+            silk_stereo: None,
             target_bitrate: None,
             last_final_range: 0,
         }
@@ -157,28 +166,30 @@ impl OpusEncoder {
     }
 
     /// Encodes one frame of interleaved 48 kHz f32 PCM in `[-1, 1]` as a
-    /// SILK-mode Opus packet (mono only). The frame must be 10, 20, 40 or
-    /// 60 ms (480/960/1920/2880 samples). The audio bandwidth selects the
-    /// SILK internal rate: narrowband (8 kHz), mediumband (12 kHz), or
-    /// wideband (16 kHz; super-wideband/fullband are treated as wideband,
-    /// since pure SILK tops out there). The 48 kHz input is high-pass-free
-    /// resampled to the internal rate, coded, and wrapped with the SILK TOC.
+    /// SILK-mode Opus packet (mono or stereo). The frame must be 10, 20, 40 or
+    /// 60 ms (480/960/1920/2880 samples per channel). The audio bandwidth
+    /// selects the SILK internal rate: narrowband (8 kHz), mediumband
+    /// (12 kHz), or wideband (16 kHz; super-wideband/fullband are treated as
+    /// wideband, since pure SILK tops out there). The 48 kHz input is
+    /// resampled per channel to the internal rate, coded (mid/side for
+    /// stereo), and wrapped with the SILK TOC.
     ///
     /// # Errors
     ///
     /// [`EncodeError::InvalidFrameSize`] if `pcm` is not a SILK frame size
-    /// (mono); [`EncodeError::InvalidBudget`] if the packet would exceed
-    /// `max_bytes` (`3..=1275`).
+    /// (per channel); [`EncodeError::InvalidBudget`] if the packet would
+    /// exceed `max_bytes` (`3..=1275`).
     ///
     /// # Panics
     ///
     /// Panics if the internal SILK encoder fails to produce a valid frame for
     /// the given input (it does not for in-range PCM).
     pub fn encode_silk(&mut self, pcm: &[f32], max_bytes: usize) -> Result<Vec<u8>, EncodeError> {
-        if self.channels != 1 {
+        if self.channels == 0 || pcm.len() % self.channels != 0 {
             return Err(EncodeError::InvalidFrameSize);
         }
-        let (frame_ms, lm) = match pcm.len() {
+        let per_ch = pcm.len() / self.channels;
+        let (frame_ms, lm) = match per_ch {
             480 => (10usize, 0u8),
             960 => (20, 1),
             1920 => (40, 2),
@@ -195,44 +206,67 @@ impl OpusEncoder {
             _ => (8, 16), // wideband (and SWB/FB fall back to WB)
         };
         let nb_subfr = if frame_ms == 10 { 2 } else { 4 };
+        let bitrate = self.target_bitrate.map_or(20_000, |b| b as i32);
 
-        // (Re)create the SILK encoder + resampler if the configuration changed.
-        let need_new = self
-            .silk
-            .as_ref()
-            .is_none_or(|(_, _, khz, nbs)| *khz != internal_khz || *nbs != nb_subfr);
-        if need_new {
-            self.silk = Some((
-                crate::silk::encode::api::SilkEncoder::new(internal_khz, nb_subfr),
-                crate::silk::resampler::Resampler::new_enc(48_000, internal_khz * 1000),
-                internal_khz,
-                nb_subfr,
-            ));
-        }
-        let target_bitrate = self.target_bitrate;
-        let (silk, resampler, _, _) = self.silk.as_mut().expect("configured");
-        // Set the coding SNR from the target bitrate (default ~20 kbps).
-        // There is no closed-loop rate control yet, so this sets the quality,
-        // not a hard byte cap.
-        silk.set_bitrate(target_bitrate.map_or(20_000, |b| b as i32).clamp(5000, 80_000));
+        // 48 kHz f32 → i16.
+        let to_i16 = |v: f32| (v * 32768.0).round().clamp(-32768.0, 32767.0) as i16;
 
-        // 48 kHz f32 → i16, then resample to the internal rate.
-        let in16: Vec<i16> = pcm
-            .iter()
-            .map(|&v| (v * 32768.0).round().clamp(-32768.0, 32767.0) as i16)
-            .collect();
-        let out_len = pcm.len() * internal_khz as usize / 48;
-        let mut internal = vec![0i16; out_len];
-        resampler.process(&mut internal, &in16);
+        let payload = if self.channels == 1 {
+            let need_new = self
+                .silk
+                .as_ref()
+                .is_none_or(|(_, _, khz, nbs)| *khz != internal_khz || *nbs != nb_subfr);
+            if need_new {
+                self.silk = Some((
+                    crate::silk::encode::api::SilkEncoder::new(internal_khz, nb_subfr),
+                    crate::silk::resampler::Resampler::new_enc(48_000, internal_khz * 1000),
+                    internal_khz,
+                    nb_subfr,
+                ));
+            }
+            let (silk, resampler, _, _) = self.silk.as_mut().expect("configured");
+            silk.set_bitrate(bitrate.clamp(5000, 80_000));
+            let in16: Vec<i16> = pcm.iter().map(|&v| to_i16(v)).collect();
+            let out_len = per_ch * internal_khz as usize / 48;
+            let mut internal = vec![0i16; out_len];
+            resampler.process(&mut internal, &in16);
+            let p = silk.encode(&internal);
+            self.last_final_range = silk.final_range();
+            p
+        } else {
+            // Stereo: deinterleave, resample each channel, mid/side encode.
+            let need_new = self
+                .silk_stereo
+                .as_ref()
+                .is_none_or(|(_, _, _, khz, nbs)| *khz != internal_khz || *nbs != nb_subfr);
+            if need_new {
+                self.silk_stereo = Some((
+                    crate::silk::encode::api::SilkStereoEncoder::new(internal_khz, nb_subfr),
+                    crate::silk::resampler::Resampler::new_enc(48_000, internal_khz * 1000),
+                    crate::silk::resampler::Resampler::new_enc(48_000, internal_khz * 1000),
+                    internal_khz,
+                    nb_subfr,
+                ));
+            }
+            let (silk, rl, rr, _, _) = self.silk_stereo.as_mut().expect("configured");
+            silk.set_bitrate(bitrate.clamp(5000, 100_000));
+            let l16: Vec<i16> = pcm.iter().step_by(2).map(|&v| to_i16(v)).collect();
+            let r16: Vec<i16> = pcm.iter().skip(1).step_by(2).map(|&v| to_i16(v)).collect();
+            let out_len = per_ch * internal_khz as usize / 48;
+            let (mut li, mut ri) = (vec![0i16; out_len], vec![0i16; out_len]);
+            rl.process(&mut li, &l16);
+            rr.process(&mut ri, &r16);
+            let p = silk.encode(&li, &ri);
+            self.last_final_range = silk.final_range();
+            p
+        };
 
-        let payload = silk.encode(&internal);
-        self.last_final_range = silk.final_range();
         if payload.len() + 1 > max_bytes {
             return Err(EncodeError::InvalidBudget);
         }
 
         let config = config_base + lm;
-        let toc = config << 3; // mono, code 0
+        let toc = (config << 3) | (u8::from(self.channels == 2) << 2); // code 0
         let mut packet = Vec::with_capacity(payload.len() + 1);
         packet.push(toc);
         packet.extend_from_slice(&payload);
@@ -294,6 +328,56 @@ mod tests {
                 "{bw:?} reconstruction correlation {last_corr:.3} too low"
             );
         }
+    }
+
+    /// A stereo SILK-mode Opus stream decodes through `OpusDecoder` with the
+    /// final range matching across the mid-only→side transition.
+    #[test]
+    fn silk_stereo_packet_round_trips_through_the_opus_decoder() {
+        let spf = 960usize; // 20 ms at 48 kHz, per channel
+        let mut enc = OpusEncoder::new(2);
+        enc.set_bandwidth(Bandwidth::WideBand);
+        let mut dec = OpusDecoder::new(2);
+        let mut saw_mismatch = false;
+        let mut last_corr = 0.0f64;
+        for f in 0..60 {
+            let mut pcm = Vec::with_capacity(spf * 2);
+            for i in 0..spf {
+                let t = (f * spf + i) as f32 / 48_000.0;
+                let l = 0.4 * (2.0 * core::f32::consts::PI * 200.0 * t).sin();
+                let r = 0.2 * (2.0 * core::f32::consts::PI * 200.0 * t + 0.3).sin()
+                    + 0.3 * (2.0 * core::f32::consts::PI * 360.0 * t).sin();
+                pcm.push(l);
+                pcm.push(r);
+            }
+            let packet = enc.encode_silk(&pcm, 1275).expect("stereo silk encode");
+            let out = dec.decode_packet(&packet).expect("decode");
+            assert_eq!(out.len(), spf * 2, "stereo output length");
+            if dec.final_range() != enc.final_range() {
+                saw_mismatch = true;
+            }
+            // Left-channel correlation, delay-aligned.
+            let dec_l: Vec<f32> = out.iter().step_by(2).copied().collect();
+            let inp_l: Vec<f32> = pcm.iter().step_by(2).copied().collect();
+            last_corr = (0..700usize)
+                .map(|d| {
+                    let (mut s, mut dot, mut e) = (0.0f64, 0.0f64, 0.0f64);
+                    for i in 0..spf - d {
+                        let a = f64::from(inp_l[i]);
+                        let b = f64::from(dec_l[i + d]);
+                        s += a * a;
+                        dot += a * b;
+                        e += b * b;
+                    }
+                    dot / (s.sqrt() * e.sqrt()).max(1e-9)
+                })
+                .fold(0.0f64, f64::max);
+        }
+        // The bit-exact range match is the oracle; the correlation only
+        // sanity-checks that audio comes out (the mid-dominant rate decision
+        // collapses some stereo width, so it is well below 1).
+        assert!(!saw_mismatch, "stereo SILK range mismatch through OpusDecoder");
+        assert!(last_corr > 0.5, "stereo correlation {last_corr:.3} too low");
     }
 
     #[test]
