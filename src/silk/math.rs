@@ -6,8 +6,7 @@
 //! bit-for-bit. The portable 64-bit forms of the reference macros are used
 //! throughout; additions that the reference performs in (two's-complement)
 //! machine arithmetic are `wrapping_*` here.
-
-#![allow(dead_code, reason = "consumed incrementally as the SILK decoder stages land")]
+#![allow(dead_code, reason = "some kernels are used only by the std-gated encoder")]
 
 /// `silk_SMULWB`: `(a * (i64)(i16)b) >> 16`.
 #[inline]
@@ -19,12 +18,6 @@ pub(crate) const fn smulwb(a: i32, b: i32) -> i32 {
 #[inline]
 pub(crate) const fn smlawb(a: i32, b: i32, c: i32) -> i32 {
     a.wrapping_add(((b as i64 * (c as i16 as i64)) >> 16) as i32)
-}
-
-/// `silk_SMULWT`: `(a * (i64)(b >> 16)) >> 16`.
-#[inline]
-pub(crate) const fn smulwt(a: i32, b: i32) -> i32 {
-    ((a as i64 * (b >> 16) as i64) >> 16) as i32
 }
 
 /// `silk_SMLAWT`: `a + ((b * (i64)(c >> 16)) >> 16)`.

@@ -9,8 +9,10 @@
 //! (`down_FIR` over an `AR2` prefilter) serve both the decoder's higher-rate
 //! outputs and the encoder front-end ([`Resampler::new_enc`], API rate →
 //! internal rate, including the 1:3/1:4/1:6 ratios).
-
-#![allow(dead_code, reason = "consumed incrementally as the SILK decoder stages land")]
+#![allow(
+    dead_code,
+    reason = "the encoder front-end paths are used only by the std-gated encoder"
+)]
 
 use alloc::vec;
 
