@@ -166,6 +166,31 @@ impl CeltEncoder {
     /// Panics on invalid frame sizes, byte budgets outside 2..=1275, or
     /// `end` outside 1..=21.
     pub fn encode_frame_bw(&mut self, pcm: &[f32], nb_bytes: usize, end: usize) -> Vec<u8> {
+        let mut enc = RangeEncoder::new(nb_bytes);
+        let vbr = self.target_bitrate.is_some();
+        self.encode_core(&mut enc, pcm, 0, end, nb_bytes, vbr);
+        self.final_range = enc.range_size();
+        enc.finalize().expect("budget enforced by construction")
+    }
+
+    /// Encodes CELT bands `start..end` into the (possibly shared) range coder
+    /// `enc`, without creating or finalising it. With `start == 0` this is the
+    /// CELT-only path; with `start == 17` it is the high band of a hybrid
+    /// packet, continuing the coder SILK has already written to (so the
+    /// silence flag - coded only at `tell()==1` - and the post-filter are
+    /// skipped, and VBR shrinking is disabled). `nb_bytes` is the whole
+    /// packet's byte budget; the allocation derives CELT's share from the
+    /// bits already spent.
+    #[allow(clippy::too_many_arguments, reason = "shared CELT-only/hybrid core")]
+    fn encode_core(
+        &mut self,
+        enc: &mut RangeEncoder,
+        pcm: &[f32],
+        start: usize,
+        end: usize,
+        nb_bytes: usize,
+        vbr: bool,
+    ) {
         let channels = self.channels;
         assert!(pcm.len() % channels == 0, "interleaved frame length");
         assert!((1..=NB_EBANDS).contains(&end), "end must be 1..=21");
@@ -174,10 +199,8 @@ impl CeltEncoder {
             .find(|&lm| SHORT_MDCT_SIZE << lm == n)
             .expect("frame size must be 120/240/480/960 per channel");
         assert!((2..=1275).contains(&nb_bytes));
-        let start = 0usize;
         let m = 1usize << lm;
 
-        let mut enc = RangeEncoder::new(nb_bytes);
         let total_bits = (nb_bytes * 8) as u32;
 
         // Per channel: pre-emphasis into the signal domain (scale 32768),
@@ -317,8 +340,9 @@ impl CeltEncoder {
             (nb_bytes as i32) * 8 * 50 * (1 << (3 - lm)) - (40 * channels as i32 + 20) * ((400 >> lm) - 50);
 
         // --- Bitstream, in the decoder's exact order. ---
-        // Silence flag.
-        if enc.tell() + 15 <= total_bits {
+        // Silence flag - only at the very start of the packet (`tell() == 1`).
+        // In hybrid the coder already holds SILK data, so it is not coded.
+        if enc.tell() == 1 {
             enc.encode_bit_logp(false, 15);
         }
         // Post-filter parameters. When on, the byte budget that enabled the
@@ -366,7 +390,7 @@ impl CeltEncoder {
 
         // Coarse energy.
         let mut error = [[0.0f32; NB_EBANDS]; 2];
-        self.quant_coarse_energy(&mut enc, start, end, &band_log_e, &mut error, intra, lm, total_bits);
+        self.quant_coarse_energy(enc, start, end, &band_log_e, &mut error, intra, lm, total_bits);
 
         // Time-frequency coding (`tf_encode`): code each band's flag as the
         // change from the previous band, code tf_select when it matters, and
@@ -496,7 +520,7 @@ impl CeltEncoder {
         // reference does - safe because their budget checks only bite near
         // exhaustion, far from the chosen size.)
         let mut nb_bytes = nb_bytes;
-        if let Some(bitrate) = self.target_bitrate {
+        if let Some(bitrate) = self.target_bitrate.filter(|_| vbr) {
             let bitrate = bitrate as i32;
             // Cap per frame size (the allocator can't exceed ~510 kb/s).
             nb_bytes = nb_bytes.min(1275 >> (3 - lm));
@@ -533,7 +557,7 @@ impl CeltEncoder {
         bits -= anti_collapse_rsv;
         let alloc = compute_allocation(
             &mut AllocEc::Enc {
-                enc: &mut enc,
+                enc: &mut *enc,
                 signal_bandwidth: end - 1,
                 intensity,
                 dual_stereo,
@@ -550,13 +574,13 @@ impl CeltEncoder {
         self.last_coded_bands = alloc.coded_bands;
 
         // Fine energy.
-        self.quant_fine_energy(&mut enc, start, end, &mut error, &alloc.fine_quant);
+        self.quant_fine_energy(enc, start, end, &mut error, &alloc.fine_quant);
 
         // Band shapes.
         let total = ((nb_bytes * 8) << 3) as i32 - anti_collapse_rsv;
         let (xs, ys) = x.split_at_mut(n);
         quant_all_bands_enc(
-            &mut enc,
+            enc,
             start,
             end,
             xs,
@@ -582,7 +606,7 @@ impl CeltEncoder {
         // Finalise the leftover bits into extra fine energy.
         let bits_left = nb_bytes as i32 * 8 - enc.tell() as i32;
         self.quant_energy_finalise(
-            &mut enc,
+            enc,
             start,
             end,
             &mut error,
@@ -607,8 +631,6 @@ impl CeltEncoder {
         }
         self.last_transient = is_transient;
         self.frames += 1;
-        self.final_range = enc.range_size();
-        enc.finalize().expect("budget enforced by construction")
     }
 
     /// The range state after the last encoded frame; a conformant decoder
