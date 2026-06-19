@@ -31,6 +31,9 @@ fn sigmoid(x: f32) -> f32 {
 pub(crate) struct GainsResult {
     /// Quantised per-subframe gains in Q16 (input to NSQ).
     pub gains_q16: [i32; MAX_NB_SUBFR],
+    /// Unquantised (limited) per-subframe gains in Q16 (`GainsUnq_Q16`), the
+    /// base the `max_bits` rate-control loop rescales by a gain multiplier.
+    pub gains_unq_q16: [i32; MAX_NB_SUBFR],
     /// The coded gain indices.
     pub gains_indices: [i8; MAX_NB_SUBFR],
     /// Rate-distortion trade-off (NSQ's `Lambda`, float).
@@ -78,11 +81,13 @@ pub(crate) fn process_gains(
         gains[k] = (g * g + res_nrg[k] * inv_max_sqr_val).sqrt().min(32767.0);
     }
 
-    // Quantise the gains.
+    // Quantise the gains. Keep the pre-quantisation values (`GainsUnq_Q16`)
+    // for the `max_bits` rate-control loop.
     let mut gains_q16 = [0i32; MAX_NB_SUBFR];
     for k in 0..nb_subfr {
         gains_q16[k] = (gains[k] * 65536.0) as i32;
     }
+    let gains_unq_q16 = gains_q16;
     let mut gains_indices = [0i8; MAX_NB_SUBFR];
     gains_quant(
         &mut gains_indices,
@@ -111,6 +116,7 @@ pub(crate) fn process_gains(
 
     GainsResult {
         gains_q16,
+        gains_unq_q16,
         gains_indices,
         lambda,
         quant_offset_type,

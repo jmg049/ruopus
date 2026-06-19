@@ -92,7 +92,7 @@ impl SilkEncoder {
             "input must be a whole number of frames"
         );
         let mut enc = RangeEncoder::new(1275);
-        self.encode_into(&mut enc, input);
+        self.encode_into(&mut enc, input, None);
         self.final_range = enc.range_size();
         // `finalize` returns the full allocated buffer; shrink to the bytes the
         // coder actually used (SILK is purely range-coded, no raw-bit tail) so
@@ -107,10 +107,15 @@ impl SilkEncoder {
     /// coder `enc`, without finalising it (for hybrid packets, where CELT
     /// continues in the same coder). Does not record `final_range`.
     ///
+    /// `max_bits`, when set, is a hard cap on the cumulative coded size (in
+    /// bits, as `enc.tell()` measures it): each frame scales its gains coarser
+    /// until the running total fits, reserving room for the CELT high band in
+    /// hybrid packets.
+    ///
     /// # Panics
     ///
     /// Panics if `input` is not a whole number of frames.
-    pub fn encode_into(&mut self, enc: &mut RangeEncoder, input: &[i16]) {
+    pub fn encode_into(&mut self, enc: &mut RangeEncoder, input: &[i16], max_bits: Option<i32>) {
         let frame_length = self.ch.nb_subfr * 5 * self.ch.fs_khz as usize;
         assert!(
             !input.is_empty() && input.len() % frame_length == 0,
@@ -133,30 +138,8 @@ impl SilkEncoder {
                 CondCoding::Conditionally
             };
             self.ch
-                .encode_frame(enc, &input[i * frame_length..(i + 1) * frame_length], cond);
+                .encode_frame(enc, &input[i * frame_length..(i + 1) * frame_length], cond, max_bits);
         }
-    }
-
-    /// Like [`encode_into`](Self::encode_into), but rate-controls so the SILK
-    /// contribution does not exceed `max_bytes`, lowering the coding SNR and
-    /// re-trying on a clone until it fits (or the 6 kb/s floor is reached).
-    /// The hybrid path uses this to reserve room for the CELT high band so a
-    /// loud frame cannot starve it. The encoder state advances exactly once.
-    pub fn encode_into_capped(&mut self, enc: &mut RangeEncoder, input: &[i16], max_bytes: usize) {
-        let mut bps = self.ch.target_rate_bps;
-        for _ in 0..12 {
-            let mut probe = self.clone();
-            probe.set_bitrate(bps);
-            let mut tmp = RangeEncoder::new(1275);
-            probe.encode_into(&mut tmp, input);
-            let bits = (tmp.tell_frac() as usize + 7) >> 3;
-            if bits.div_ceil(8) <= max_bytes || bps <= 6_000 {
-                break;
-            }
-            bps = (bps * 3 / 4).max(6_000);
-        }
-        self.set_bitrate(bps);
-        self.encode_into(enc, input);
     }
 }
 
@@ -305,7 +288,7 @@ impl SilkStereoEncoder {
                 CondCoding::Conditionally
             };
             self.mid.set_bitrate(fd.rates[0]);
-            self.mid.encode_frame(&mut *enc, &fd.mid, mid_cond);
+            self.mid.encode_frame(&mut *enc, &fd.mid, mid_cond, None);
             if !fd.mid_only {
                 if self.prev_mid_only {
                     self.side.reset_side_prediction();
@@ -318,7 +301,7 @@ impl SilkStereoEncoder {
                     CondCoding::Conditionally
                 };
                 self.side.set_bitrate(fd.rates[1]);
-                self.side.encode_frame(&mut *enc, &fd.side, side_cond);
+                self.side.encode_frame(&mut *enc, &fd.side, side_cond, None);
             }
             self.prev_mid_only = fd.mid_only;
         }

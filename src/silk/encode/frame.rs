@@ -23,10 +23,12 @@ use alloc::vec::Vec;
 
 use crate::range::RangeEncoder;
 
+use super::super::gains::gains_quant;
 use super::super::indices::{
     CondCoding, EcPrevState, MAX_LPC_ORDER, MAX_NB_SUBFR, SideInfoIndices, TYPE_UNVOICED, TYPE_VOICED, encode_indices,
     nlsf_codebook,
 };
+use super::super::math::smulwb;
 use super::super::nlsf::nlsf2a;
 use super::super::params::LTP_ORDER;
 use super::super::pulses::encode_pulses;
@@ -121,6 +123,7 @@ impl SilkChannelEncoder {
         enc: &mut RangeEncoder,
         input: &[i16],
         cond_coding: CondCoding,
+        max_bits: Option<i32>,
     ) -> SideInfoIndices {
         let order = if self.fs_khz == 16 { 16 } else { 10 };
         let subfr_length = 5 * self.fs_khz as usize;
@@ -262,6 +265,9 @@ impl SilkChannelEncoder {
             res_nrg[k] = (f64::from(gains[k]) * f64::from(gains[k]) * nrg) as f32;
         }
 
+        // `lastGainIndexPrev`: the gain-quantiser accumulator before this
+        // frame, restored each iteration of the `max_bits` rate-control loop.
+        let last_gain_prev = self.last_gain_index;
         let gres = process_gains(
             &mut gains,
             &res_nrg,
@@ -297,30 +303,10 @@ impl SilkChannelEncoder {
             predict_lpc_order: order,
             shaping_lpc_order,
         };
-        let mut pulses = vec![0i8; frame_length];
         let lambda_q10 = (gres.lambda * 1024.0) as i32;
-        nsq(
-            &mut self.nsq,
-            &cfg,
-            signal_type,
-            gres.quant_offset_type,
-            4,
-            seed,
-            input,
-            &mut pulses,
-            &pred_coef,
-            &ltp_coef,
-            &shp.ar_q13,
-            &shp.harm_shape_gain_q14,
-            &shp.tilt_q14,
-            &shp.lf_shp_q14,
-            &gres.gains_q16,
-            &pitch_l,
-            lambda_q10,
-            ltp_scale_q14,
-        );
 
-        // Assemble the side info and write the frame.
+        // Assemble the side info; `gains_indices` is filled per rate-control
+        // iteration below.
         let mut indices = SideInfoIndices {
             signal_type: signal_type as i8,
             quant_offset_type: gres.quant_offset_type as i8,
@@ -328,7 +314,6 @@ impl SilkChannelEncoder {
             seed: seed as i8,
             ..SideInfoIndices::default()
         };
-        indices.gains_indices[..self.nb_subfr].copy_from_slice(&gres.gains_indices[..self.nb_subfr]);
         indices.nlsf_indices[..=order].copy_from_slice(&nlsf_indices[..=order]);
         if is_voiced {
             indices.lag_index = pl.lag_index;
@@ -348,17 +333,144 @@ impl SilkChannelEncoder {
             self.prev_input[ltp_mem_length - frame_length..].copy_from_slice(input);
         }
 
-        encode_indices(
-            enc,
-            &indices,
-            self.fs_khz,
-            self.nb_subfr,
-            false,
-            true,
-            cond_coding,
-            &mut self.ec_prev,
-        );
-        encode_pulses(enc, signal_type, gres.quant_offset_type, &pulses, frame_length);
+        // NSQ + entropy coding. With `max_bits` set (hybrid), this is libopus's
+        // per-frame rate-control loop (`silk_encode_frame_FLP`): the first
+        // attempt uses the gains from `process_gains`; if it busts the cap, the
+        // unquantised gains are scaled coarser by a multiplier - geometrically
+        // until the over/under budget is bracketed, then bisection-interpolated
+        // toward the cap - re-running NSQ and re-coding from a snapshot each
+        // time. The best fitting attempt is restored at the end.
+        //
+        // Capped at the reference's 1024 (4×) ceiling over 6 iterations; a rare
+        // loud transient that still busts at 4× is left over budget and the
+        // caller (encode_auto) falls back to CELT, which codes it far better
+        // than extreme-gain SILK (driving the gain higher tanks the
+        // energy-weighted SNR of that frame). The reference's zero-pulse damage
+        // control (which would desync our decoder without a synthesis resync),
+        // per-subframe gain locking and lambda adjustment are future refinements.
+        let mut pulses = vec![0i8; frame_length];
+        let mut gains_q16 = gres.gains_q16;
+        let mut gains_indices = gres.gains_indices;
+        let snap = max_bits.map(|_| (enc.clone(), self.nsq.clone(), self.ec_prev));
+        let bits_margin = max_bits.map_or(0, |m| m / 4); // VBR: within 25% is close enough
+        let mut best_fit: Option<(RangeEncoder, NsqState, EcPrevState, i8, [i8; MAX_NB_SUBFR])> = None;
+        let mut gain_mult_q8 = 256i32;
+        let (mut found_lower, mut found_upper) = (false, false);
+        let (mut gm_lower, mut gm_upper) = (0i32, 0i32);
+        let (mut nb_lower, mut nb_upper) = (0i32, 0i32);
+        let mut iter = 0;
+        loop {
+            if iter > 0 {
+                // Restore and re-quantise the gains scaled by the multiplier.
+                let (enc0, nsq0, ec0) = snap.as_ref().expect("snapshot present when capping");
+                enc.clone_from(enc0);
+                self.nsq.clone_from(nsq0);
+                self.ec_prev = *ec0;
+                self.last_gain_index = last_gain_prev;
+                let mut pg = [0i32; MAX_NB_SUBFR];
+                for (k, pg_k) in pg.iter_mut().enumerate().take(self.nb_subfr) {
+                    // pGains_Q16 = LSHIFT_SAT32(SMULWB(GainsUnq_Q16, gainMult_Q8), 8).
+                    let v = i64::from(smulwb(gres.gains_unq_q16[k], gain_mult_q8)) << 8;
+                    *pg_k = v.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+                }
+                let mut gi = [0i8; MAX_NB_SUBFR];
+                gains_quant(
+                    &mut gi,
+                    &mut pg,
+                    &mut self.last_gain_index,
+                    cond_coding == CondCoding::Conditionally,
+                    self.nb_subfr,
+                );
+                gains_q16 = pg;
+                gains_indices = gi;
+            }
+
+            nsq(
+                &mut self.nsq,
+                &cfg,
+                signal_type,
+                gres.quant_offset_type,
+                4,
+                seed,
+                input,
+                &mut pulses,
+                &pred_coef,
+                &ltp_coef,
+                &shp.ar_q13,
+                &shp.harm_shape_gain_q14,
+                &shp.tilt_q14,
+                &shp.lf_shp_q14,
+                &gains_q16,
+                &pitch_l,
+                lambda_q10,
+                ltp_scale_q14,
+            );
+            indices.gains_indices[..self.nb_subfr].copy_from_slice(&gains_indices[..self.nb_subfr]);
+            encode_indices(
+                enc,
+                &indices,
+                self.fs_khz,
+                self.nb_subfr,
+                false,
+                true,
+                cond_coding,
+                &mut self.ec_prev,
+            );
+            encode_pulses(enc, signal_type, gres.quant_offset_type, &pulses, frame_length);
+
+            let Some(max_bits) = max_bits else { break };
+            let n_bits = enc.tell() as i32;
+            // VBR: the first attempt at the target gains is accepted if it fits.
+            if iter == 0 && n_bits <= max_bits {
+                break;
+            }
+            if n_bits <= max_bits {
+                best_fit = Some((
+                    enc.clone(),
+                    self.nsq.clone(),
+                    self.ec_prev,
+                    self.last_gain_index,
+                    indices.gains_indices,
+                ));
+                if n_bits >= max_bits - bits_margin {
+                    break; // close enough to the cap
+                }
+                found_lower = true;
+                nb_lower = n_bits;
+                gm_lower = gain_mult_q8;
+            } else {
+                found_upper = true;
+                nb_upper = n_bits;
+                gm_upper = gain_mult_q8;
+            }
+            if iter >= 6 {
+                break;
+            }
+            iter += 1;
+            gain_mult_q8 = if found_lower && found_upper {
+                // Interpolate to the cap, then clamp to the middle half of the
+                // bracket (gm_upper < gm_lower since more gain → fewer bits).
+                let interp = gm_lower + (gm_upper - gm_lower) * (max_bits - nb_lower) / (nb_upper - nb_lower);
+                let span = gm_upper - gm_lower;
+                interp.clamp(gm_upper - span / 4, gm_lower + span / 4)
+            } else if n_bits > max_bits {
+                (gain_mult_q8 * 3 / 2).min(1024)
+            } else {
+                (gain_mult_q8 * 4 / 5).max(64)
+            };
+        }
+
+        // If the final attempt still busts but an earlier one fit, restore it.
+        if let (Some(max_bits), Some(bf)) = (max_bits, &best_fit) {
+            if enc.tell() as i32 > max_bits {
+                let (enc0, nsq0, ec0, lg0, gi0) = bf;
+                enc.clone_from(enc0);
+                self.nsq.clone_from(nsq0);
+                self.ec_prev = *ec0;
+                self.last_gain_index = *lg0;
+                indices.gains_indices = *gi0;
+            }
+        }
         indices
     }
 }
@@ -382,7 +494,7 @@ mod tests {
         let ltp_mem = 20 * e.fs_khz as usize;
 
         let mut enc = RangeEncoder::new(512);
-        let ind = e.encode_frame(&mut enc, input, CondCoding::Independently);
+        let ind = e.encode_frame(&mut enc, input, CondCoding::Independently, None);
         let signal_type = i32::from(ind.signal_type);
         let xq_enc: Vec<i16> = e.nsq.xq[ltp_mem..ltp_mem + frame_length].to_vec();
         let bytes = enc.finalize().expect("frame fits");

@@ -437,7 +437,7 @@ impl OpusEncoder {
         let nb_bytes = ((target * frame_ms as i32 / 8000) as usize).clamp(20, max_bytes);
         let swb = matches!(self.bandwidth, Bandwidth::SuperWideBand);
         let silk_bps = compute_silk_rate_for_hybrid(target, swb, self.channels as i32);
-        let celt_floor = (celt_end - 17) * 4 + 4;
+        let celt_floor = (celt_end - 17) * 3 + 3;
         let silk_cap = nb_bytes.saturating_sub(celt_floor).max(8);
         let to_i16 = |v: f32| (v * 32768.0).round().clamp(-32768.0, 32767.0) as i16;
         let internal_len = per_ch / 3; // 48 kHz → 16 kHz
@@ -466,7 +466,8 @@ impl OpusEncoder {
             let in16: Vec<i16> = pcm.iter().map(|&v| to_i16(v)).collect();
             let mut internal = vec![0i16; internal_len];
             resampler.process(&mut internal, &in16);
-            silk.encode_into_capped(&mut enc, &internal, silk_cap);
+            // Hard bit cap so the SILK low band leaves the CELT high band room.
+            silk.encode_into(&mut enc, &internal, Some((silk_cap * 8) as i32));
         } else {
             // Stereo SILK low band: deinterleave, resample each channel to WB.
             let need_new = self
