@@ -33,10 +33,6 @@ Differences from the reference (`silk_encode_frame_FLP`):
 - `compute_silk_rate_for_hybrid` ports libopus's rate table but only the
   no-FEC column and the +300 bps super-wideband nudge; the FEC columns and
   the stereo -1000 bps tweak are unused (no FEC / stereo-hybrid cap yet).
-- **Stereo hybrid is uncapped.** `SilkStereoEncoder::encode_into` does not
-  thread `max_bits`, so stereo hybrid can still overrun at tight budgets
-  (mono hybrid is capped). Extending the cap to the stereo mid/side frames is
-  the same mechanism applied twice.
 - `celt_floor` (the reserved CELT high-band byte share) is a heuristic
   (`(bands)*3 + 3`), tuned by hand on one speech clip. A rate-aware split
   would be better.

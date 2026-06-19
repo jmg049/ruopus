@@ -204,7 +204,7 @@ impl SilkStereoEncoder {
     #[must_use]
     pub fn encode(&mut self, left: &[i16], right: &[i16]) -> Vec<u8> {
         let mut enc = RangeEncoder::new(1275);
-        self.encode_into(&mut enc, left, right);
+        self.encode_into(&mut enc, left, right, None);
         self.final_range = enc.range_size();
         let bits = (enc.tell_frac() as usize + 7) >> 3;
         let nbytes = bits.div_ceil(8).max(2);
@@ -216,11 +216,16 @@ impl SilkStereoEncoder {
     /// `enc`, without finalising it (for hybrid packets). Does not record
     /// `final_range`.
     ///
+    /// `max_bits`, when set, hard-caps the cumulative coded size (in bits, as
+    /// `enc.tell()` measures it): the mid frame is capped to `max_bits`, then
+    /// the side frame to the same cumulative budget, so the combined SILK low
+    /// band leaves the CELT high band room in a hybrid packet.
+    ///
     /// # Panics
     ///
     /// Panics if the channels differ in length or are not a whole number of
     /// frames.
-    pub fn encode_into(&mut self, enc: &mut RangeEncoder, left: &[i16], right: &[i16]) {
+    pub fn encode_into(&mut self, enc: &mut RangeEncoder, left: &[i16], right: &[i16], max_bits: Option<i32>) {
         let fl = self.nb_subfr * 5 * self.fs_khz as usize;
         assert_eq!(left.len(), right.len(), "channel length mismatch");
         assert!(!left.is_empty() && left.len() % fl == 0, "whole frames");
@@ -288,7 +293,7 @@ impl SilkStereoEncoder {
                 CondCoding::Conditionally
             };
             self.mid.set_bitrate(fd.rates[0]);
-            self.mid.encode_frame(&mut *enc, &fd.mid, mid_cond, None);
+            self.mid.encode_frame(&mut *enc, &fd.mid, mid_cond, max_bits);
             if !fd.mid_only {
                 if self.prev_mid_only {
                     self.side.reset_side_prediction();
@@ -301,7 +306,7 @@ impl SilkStereoEncoder {
                     CondCoding::Conditionally
                 };
                 self.side.set_bitrate(fd.rates[1]);
-                self.side.encode_frame(&mut *enc, &fd.side, side_cond, None);
+                self.side.encode_frame(&mut *enc, &fd.side, side_cond, max_bits);
             }
             self.prev_mid_only = fd.mid_only;
         }

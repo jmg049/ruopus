@@ -490,7 +490,9 @@ impl OpusEncoder {
             let (mut li, mut ri) = (vec![0i16; internal_len], vec![0i16; internal_len]);
             rl.process(&mut li, &l16);
             rr.process(&mut ri, &r16);
-            silk.encode_into(&mut enc, &li, &ri);
+            // Hard bit cap so the stereo SILK low band leaves the CELT high
+            // band room (mid + side share the cumulative budget).
+            silk.encode_into(&mut enc, &li, &ri, Some((silk_cap * 8) as i32));
         }
 
         // Redundancy flag (no redundant CELT frame), coded when there is room.
@@ -935,6 +937,44 @@ mod tests {
                     "stereo hybrid range mismatch {bw:?} frame {f}"
                 );
             }
+        }
+    }
+
+    /// Stereo hybrid stays within budget: the cumulative `max_bits` cap (mid
+    /// then side) keeps the combined SILK low band under its share so the CELT
+    /// high band always fits. On a busy speech-like stereo signal (voiced
+    /// tones + noise under a syllabic envelope) every frame encodes with the
+    /// cap; without it the SILK low band overruns and several frames fail. All
+    /// packets round-trip through `OpusDecoder` with the matching range.
+    #[test]
+    fn stereo_hybrid_stays_within_budget_on_busy_speech() {
+        let mut seed = 0x1234_5678u32;
+        let mut enc = OpusEncoder::new(2);
+        enc.set_bandwidth(Bandwidth::SuperWideBand);
+        enc.set_bitrate(Some(24_000));
+        let mut dec = OpusDecoder::new(2);
+        let total = 60;
+        for f in 0..total {
+            let env = 0.4 + 0.55 * (2.0 * core::f32::consts::PI * f as f32 / 7.0).sin().abs();
+            let mut pcm = Vec::with_capacity(960 * 2);
+            for i in 0..960 {
+                let t = (f * 960 + i) as f32 / 48_000.0;
+                seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                let n = ((seed >> 9) as f32 / f32::from(u16::MAX) - 0.5) * 0.25;
+                let s = env
+                    * (0.6 * (2.0 * core::f32::consts::PI * 220.0 * t).sin()
+                        + 0.3 * (2.0 * core::f32::consts::PI * 1400.0 * t).sin()
+                        + 0.2 * (2.0 * core::f32::consts::PI * 5200.0 * t).sin())
+                    + n;
+                pcm.push(s);
+                pcm.push(s * 0.9 + n * 0.5);
+            }
+            let packet = enc
+                .encode_hybrid(&pcm, 1275)
+                .unwrap_or_else(|e| panic!("stereo hybrid frame {f} overran the budget: {e:?}"));
+            let out = dec.decode_packet(&packet).expect("decode");
+            assert_eq!(out.len(), 960 * 2);
+            assert_eq!(dec.final_range(), enc.final_range(), "range mismatch frame {f}");
         }
     }
 
