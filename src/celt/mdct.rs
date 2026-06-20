@@ -70,24 +70,34 @@ mod accel {
         static PLANS: RefCell<HashMap<usize, RealFftC2cPlanF32>> = RefCell::new(HashMap::new());
     }
 
+    std::thread_local! {
+        /// Reused complex scratch, sized to the current transform, so each
+        /// transform avoids a fresh heap allocation (and its zeroing).
+        static SCRATCH: RefCell<Vec<Complex<f32>>> = const { RefCell::new(Vec::new()) };
+    }
+
     /// Runs one transform over a scratch copy of `input`, writing `output`
     /// scaled by `scale`.
     pub fn run(input: &[(f32, f32)], output: &mut [(f32, f32)], inverse: bool, scale: f32) {
-        let mut buf: Vec<Complex<f32>> = input.iter().map(|&(re, im)| Complex::new(re, im)).collect();
-        PLANS.with(|plans| {
-            let mut plans = plans.borrow_mut();
-            let plan = plans
-                .entry(buf.len())
-                .or_insert_with(|| RealFftC2cPlanF32::new(buf.len()));
-            if inverse {
-                plan.inverse(&mut buf).expect("plan sized to buffer");
-            } else {
-                plan.forward(&mut buf).expect("plan sized to buffer");
+        SCRATCH.with(|scratch| {
+            let mut buf = scratch.borrow_mut();
+            buf.clear();
+            buf.extend(input.iter().map(|&(re, im)| Complex::new(re, im)));
+            PLANS.with(|plans| {
+                let mut plans = plans.borrow_mut();
+                let plan = plans
+                    .entry(buf.len())
+                    .or_insert_with(|| RealFftC2cPlanF32::new(buf.len()));
+                if inverse {
+                    plan.inverse(&mut buf).expect("plan sized to buffer");
+                } else {
+                    plan.forward(&mut buf).expect("plan sized to buffer");
+                }
+            });
+            for (out, c) in output.iter_mut().zip(buf.iter()) {
+                *out = (c.re * scale, c.im * scale);
             }
         });
-        for (out, c) in output.iter_mut().zip(&buf) {
-            *out = (c.re * scale, c.im * scale);
-        }
     }
 }
 

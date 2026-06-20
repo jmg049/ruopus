@@ -98,6 +98,13 @@ pub struct CeltEncoder {
     /// Range state of the last encoded frame (the bit-exactness oracle).
     final_range: u32,
     mdct: MdctLookup,
+    /// Reused per-frame scratch (pre-emphasis input, MDCT output) so the hot
+    /// encode path does not reallocate and re-zero them every frame. Both are
+    /// fully overwritten before use, so they carry no state between frames.
+    scratch_inputs: Vec<f32>,
+    scratch_freq: Vec<f32>,
+    /// Reused per-channel pre-filter history+frame buffers (`pre`).
+    scratch_pre: [Vec<f32>; 2],
 }
 
 impl Default for CeltEncoder {
@@ -143,6 +150,9 @@ impl CeltEncoder {
             last_pitch_gain: 0.0,
             final_range: 0,
             mdct: MdctLookup::new(1920),
+            scratch_inputs: Vec::new(),
+            scratch_freq: Vec::new(),
+            scratch_pre: [Vec::new(), Vec::new()],
         }
     }
 
@@ -214,7 +224,10 @@ impl CeltEncoder {
         // Per channel: pre-emphasis into the signal domain (scale 32768),
         // including the previous frame's overlap. `inputs` is planar.
         let in_len = OVERLAP + n;
-        let mut inputs = vec![0.0f32; in_len * channels];
+        // Reuse the scratch buffer (fully overwritten below); `resize` is a
+        // no-op once it is the right length, so no per-frame zeroing.
+        let mut inputs = core::mem::take(&mut self.scratch_inputs);
+        inputs.resize(in_len * channels, 0.0);
         for c in 0..channels {
             let input = &mut inputs[c * in_len..(c + 1) * in_len];
             input[..OVERLAP].copy_from_slice(&self.in_mem[c]);
@@ -259,9 +272,10 @@ impl CeltEncoder {
         let mut band_log_e = [[0.0f32; NB_EBANDS]; 2];
         let mut band_log_e2 = [[0.0f32; NB_EBANDS]; 2];
         let _mdct_g = crate::prof::scope("celt:mdct+bandE");
+        let mut freq = core::mem::take(&mut self.scratch_freq);
+        freq.resize(n, 0.0);
         for c in 0..channels {
             let input = &inputs[c * in_len..(c + 1) * in_len];
-            let mut freq = vec![0.0f32; n];
             if is_transient {
                 // `m` short MDCTs, interleaved into `freq`.
                 let sub = n / m;
@@ -647,6 +661,10 @@ impl CeltEncoder {
         }
         self.last_transient = is_transient;
         self.frames += 1;
+
+        // Return the scratch buffers for the next frame to reuse.
+        self.scratch_inputs = inputs;
+        self.scratch_freq = freq;
     }
 
     /// The range state after the last encoded frame; a conformant decoder
@@ -699,8 +717,10 @@ impl CeltEncoder {
     ) -> (bool, usize, i32) {
         // pre[c] = [prefilter history | this frame's new samples].
         let pre_len = COMBFILTER_MAXPERIOD + n;
-        let mut pre = [vec![0.0f32; pre_len], vec![0.0f32; pre_len]];
+        // Reuse the scratch buffers (fully overwritten for the used channels).
+        let mut pre = core::mem::take(&mut self.scratch_pre);
         for c in 0..channels {
+            pre[c].resize(pre_len, 0.0);
             pre[c][..COMBFILTER_MAXPERIOD].copy_from_slice(&self.prefilter_mem[c]);
             pre[c][COMBFILTER_MAXPERIOD..].copy_from_slice(&inputs[c * in_len + OVERLAP..c * in_len + OVERLAP + n]);
         }
@@ -792,6 +812,7 @@ impl CeltEncoder {
         self.prefilter_gain = gain1;
         self.last_pitch = pitch_index;
         self.last_pitch_gain = gain1;
+        self.scratch_pre = pre;
         (pf_on, pitch_index, qg)
     }
 
