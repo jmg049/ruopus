@@ -11,124 +11,189 @@
 //!   function, symmetric in its arguments and obeying
 //!   `U(N, K) = U(N-1, K) + U(N, K-1) + U(N-1, K-1)`.
 //!
-//! This implementation ports the table-free (`SMALL_FOOTPRINT`) variant of
-//! the reference: rows of `U` are computed on the fly with the recurrence in
-//! O(K) memory. It is mathematically identical to the table-driven fast path
-//! and produces the same indices bit-for-bit; the precomputed-table
-//! optimization can be layered on later without changing any output.
+//! This ports the reference's **table-driven** fast path (the default,
+//! non-`SMALL_FOOTPRINT` build): the `U` rows live in a precomputed flat table
+//! (`CELT_PVQ_U_DATA`, 1272 `u32`, generated once from the recurrence on first
+//! use), so decoding/encoding a band is O(N) table lookups instead of the O(NK)
+//! on-the-fly recurrence - the dominant cost of CELT band decode. The table
+//! exploits the symmetry `U(n,k) = U(k,n)`; the row index `min(n,k)` is ≤ 14
+//! for every `(n,k)` CELT's bit allocation produces.
 
-use alloc::vec;
-use alloc::vec::Vec;
+use std::sync::OnceLock;
 
 use crate::range::{RangeDecoder, RangeEncoder};
 
-/// Advances `u` from row N-1 to row N of the recurrence
-/// `u[i][j] = u[i-1][j] + u[i][j-1] + u[i-1][j-1]`, with `ui0` the new row's
-/// base case. Mirrors `unext()`.
-fn unext(u: &mut [u32], mut ui0: u32) {
-    for j in 1..u.len() {
-        let ui1 = u[j].wrapping_add(u[j - 1]).wrapping_add(ui0);
-        u[j - 1] = ui0;
-        ui0 = ui1;
-    }
-    *u.last_mut().expect("len >= 2") = ui0;
+/// Offsets of each `U` row in [`pvq_u_data`] (`CELT_PVQ_U_ROW`, 1272-entry
+/// non-custom build). Row `m` holds `U(m, c)`; `PVQ_U_ROW[15] = 1272` is the
+/// total length.
+const PVQ_U_ROW: [usize; 16] = [
+    0, 176, 351, 525, 698, 870, 1041, 1131, 1178, 1207, 1226, 1240, 1248, 1254, 1257, 1272,
+];
+
+/// The flat table, built once from the recurrence
+/// `U(a,b) = U(a-1,b) + U(a,b-1) + U(a-1,b-1)` (base `U(0,0)=1`). Row `m`'s
+/// data starts at column `m`: `data[PVQ_U_ROW[m] + c] = U(m, c)` for `c ≥ m`
+/// (so `PVQ_U_ROW[m]` is the raw start minus `m`). Entries past where `U` fits
+/// 32 bits are never accessed (their wrap is harmless).
+fn pvq_u_data() -> &'static [u32] {
+    static T: OnceLock<alloc::vec::Vec<u32>> = OnceLock::new();
+    T.get_or_init(|| {
+        // U(a, b) for a ≤ 14, b ≤ 176 (the widest standard band).
+        let mut uu = [[0u32; 177]; 15];
+        uu[0][0] = 1; // base: U(0,0)=1, U(0,b>0)=U(a>0,0)=0; recurrence only for a,b≥1.
+        for a in 1..15 {
+            for b in 1..177 {
+                uu[a][b] = uu[a - 1][b].wrapping_add(uu[a][b - 1]).wrapping_add(uu[a - 1][b - 1]);
+            }
+        }
+        let mut d = alloc::vec![0u32; PVQ_U_ROW[15]];
+        for m in 0..15 {
+            let start = PVQ_U_ROW[m] + m; // raw start of row m
+            let end = if m < 14 {
+                PVQ_U_ROW[m + 1] + (m + 1)
+            } else {
+                PVQ_U_ROW[15]
+            };
+            for p in start..end {
+                d[p] = uu[m][p - PVQ_U_ROW[m]];
+            }
+        }
+        d
+    })
 }
 
-/// Inverse of [`unext`]: steps `u` back one row. Mirrors `uprev()`.
-fn uprev(u: &mut [u32], mut ui0: u32) {
-    for j in 1..u.len() {
-        let ui1 = u[j].wrapping_sub(u[j - 1]).wrapping_sub(ui0);
-        u[j - 1] = ui0;
-        ui0 = ui1;
-    }
-    *u.last_mut().expect("len >= 2") = ui0;
+/// `U(n, k)` (`CELT_PVQ_U`) via the symmetric table (`data = pvq_u_data()`,
+/// fetched once by the caller to keep it out of the inner loop).
+#[inline]
+fn celt_pvq_u(data: &[u32], n: usize, k: usize) -> u32 {
+    let (lo, hi) = if n < k { (n, k) } else { (k, n) };
+    data[PVQ_U_ROW[lo] + hi]
 }
 
-/// Computes `V(n, k)` and fills `u[i] = U(n, i)` for `i in 0..=k+1`.
-/// Mirrors `ncwrs_urow()`; requires `n >= 2`, `k >= 1`, `u.len() == k + 2`.
-fn ncwrs_urow(n: usize, k: usize, u: &mut [u32]) -> u32 {
-    debug_assert!(n >= 2 && k >= 1);
-    debug_assert_eq!(u.len(), k + 2);
-    u[0] = 0;
-    u[1] = 1;
-    // Row 2: U(2, k) = 2k - 1.
-    for (i, v) in u.iter_mut().enumerate().skip(2) {
-        *v = (i as u32) * 2 - 1;
-    }
-    for _ in 2..n {
-        unext(&mut u[1..], 1);
-    }
-    u[k] + u[k + 1]
+/// `U(row, col)` directly (`CELT_PVQ_U_ROW[row][col]`); `row` is the symmetry
+/// min (≤ 14) at every call site, matching the reference.
+#[inline]
+fn urow(data: &[u32], row: usize, col: usize) -> u32 {
+    data[PVQ_U_ROW[row] + col]
 }
 
-/// Decodes codeword index `i` into the pulse vector `y` (length N, K pulses).
-/// `u` must contain row N of `U` for `0..=k+1`; destroyed in the process.
-/// Mirrors the `SMALL_FOOTPRINT` `cwrsi()`.
-fn cwrsi(k: usize, mut i: u32, y: &mut [i32], u: &mut [u32]) {
-    debug_assert!(!y.is_empty());
-    let mut k = k;
-    for yj_out in y.iter_mut() {
-        let p = u[k + 1];
-        // s = -1 when the pulses in this dimension are negative.
-        let s = -i32::from(i >= p);
-        if s != 0 {
+/// Decodes codeword index `i` into the pulse vector `y` (length `n`, `k`
+/// pulses), via the `U` table - the reference's fast `cwrsi()`.
+fn cwrsi(n0: usize, k0: usize, mut i: u32, y: &mut [i32]) {
+    debug_assert!(n0 > 1 && k0 > 0);
+    let data = pvq_u_data();
+    let mut n = n0;
+    let mut k = k0;
+    let mut yi = 0usize;
+    while n > 2 {
+        if k >= n {
+            // Lots of pulses: row index is `n` (≤ 14 here).
+            let p = urow(data, n, k + 1);
+            let s = -i32::from(i >= p);
+            if s != 0 {
+                i -= p;
+            }
+            let k0_dim = k;
+            let q = urow(data, n, n);
+            let p = if q > i {
+                k = n;
+                loop {
+                    k -= 1;
+                    let p = urow(data, k, n);
+                    if p <= i {
+                        break p;
+                    }
+                }
+            } else {
+                let mut p = urow(data, n, k);
+                while p > i {
+                    k -= 1;
+                    p = urow(data, n, k);
+                }
+                p
+            };
             i -= p;
+            let val = (k0_dim - k) as i32;
+            y[yi] = (val + s) ^ s;
+            yi += 1;
+        } else {
+            // Lots of dimensions: row index is `k` (≤ 14 here).
+            let p = urow(data, k, n);
+            let q = urow(data, k + 1, n);
+            if p <= i && i < q {
+                i -= p;
+                y[yi] = 0;
+            } else {
+                let s = -i32::from(i >= q);
+                if s != 0 {
+                    i -= q;
+                }
+                let k0_dim = k;
+                let p = loop {
+                    k -= 1;
+                    let p = urow(data, k, n);
+                    if p <= i {
+                        break p;
+                    }
+                };
+                i -= p;
+                let val = (k0_dim - k) as i32;
+                y[yi] = (val + s) ^ s;
+            }
+            yi += 1;
         }
-        let k0 = k;
-        let mut p = u[k];
-        while p > i {
-            k -= 1;
-            p = u[k];
-        }
-        i -= p;
-        let yj = (k0 - k) as i32;
-        *yj_out = (yj + s) ^ s;
-        uprev(&mut u[..k + 2], 0);
+        n -= 1;
     }
+    // n == 2.
+    let p = 2 * k as u32 + 1;
+    let s = -i32::from(i >= p);
+    if s != 0 {
+        i -= p;
+    }
+    let k0_dim = k;
+    k = ((i + 1) >> 1) as usize;
+    if k != 0 {
+        i -= 2 * k as u32 - 1;
+    }
+    let val = (k0_dim - k) as i32;
+    y[yi] = (val + s) ^ s;
+    yi += 1;
+    // n == 1.
+    let s = -(i as i32);
+    y[yi] = (k as i32 + s) ^ s;
 }
 
-/// Computes the codeword index of pulse vector `y` and `V(n, k)`.
-/// `u` is scratch of length `k + 2`. Mirrors the `SMALL_FOOTPRINT` `icwrs()`.
-fn icwrs(k: usize, y: &[i32], u: &mut [u32]) -> (u32, u32) {
+/// Computes the codeword index of pulse vector `y` (`icwrs()`, table-based).
+fn icwrs(y: &[i32]) -> u32 {
     let n = y.len();
     debug_assert!(n >= 2);
-    u[0] = 0;
-    for (idx, v) in u.iter_mut().enumerate().skip(1) {
-        *v = (idx as u32) * 2 - 1;
-    }
-
-    // N = 1 base case on the last element.
-    let mut i = u32::from(y[n - 1] < 0);
-    let mut kk = y[n - 1].unsigned_abs() as usize;
-
-    let mut j = n - 2;
-    i += u[kk];
-    kk += y[j].unsigned_abs() as usize;
-    if y[j] < 0 {
-        i += u[kk + 1];
-    }
-    while j > 0 {
+    let data = pvq_u_data();
+    let mut j = n - 1;
+    let mut i = u32::from(y[j] < 0);
+    let mut k = y[j].unsigned_abs() as usize;
+    loop {
         j -= 1;
-        unext(u, 0);
-        i += u[kk];
-        kk += y[j].unsigned_abs() as usize;
+        i += celt_pvq_u(data, n - j, k);
+        k += y[j].unsigned_abs() as usize;
         if y[j] < 0 {
-            i += u[kk + 1];
+            i += celt_pvq_u(data, n - j, k + 1);
+        }
+        if j == 0 {
+            break;
         }
     }
-    debug_assert_eq!(kk, k, "sum of |y| must equal K");
-    (i, u[kk] + u[kk + 1])
+    i
 }
 
 /// The size of the PVQ codebook: the number of N-dimensional vectors of K
-/// signed pulses, `V(N, K)`.
+/// signed pulses, `V(N, K) = U(N, K) + U(N, K + 1)`.
 ///
 /// Requires `n >= 2` and `k >= 1`; the result must fit in 32 bits, which
 /// holds for every (N, K) pair CELT's bit allocation can produce.
 #[must_use]
 pub fn pvq_codebook_size(n: usize, k: usize) -> u32 {
-    let mut u = vec![0u32; k + 2];
-    ncwrs_urow(n, k, &mut u)
+    let data = pvq_u_data();
+    celt_pvq_u(data, n, k) + celt_pvq_u(data, n, k + 1)
 }
 
 /// Decodes K signed unit pulses into `y` (RFC 6716 §4.3.4.2,
@@ -139,10 +204,9 @@ pub fn pvq_codebook_size(n: usize, k: usize) -> u32 {
 #[must_use]
 pub fn decode_pulses(dec: &mut RangeDecoder, y: &mut [i32], k: usize) -> Option<()> {
     debug_assert!(y.len() >= 2 && k >= 1);
-    let mut u = vec![0u32; k + 2];
-    let v = ncwrs_urow(y.len(), k, &mut u);
+    let v = pvq_codebook_size(y.len(), k);
     let i = dec.decode_uint(v)?;
-    cwrsi(k, i, y, &mut u);
+    cwrsi(y.len(), k, i, y);
     Some(())
 }
 
@@ -150,9 +214,7 @@ pub fn decode_pulses(dec: &mut RangeDecoder, y: &mut [i32], k: usize) -> Option<
 /// mirror of [`decode_pulses`] (`encode_pulses()`).
 pub fn encode_pulses(enc: &mut RangeEncoder, y: &[i32], k: usize) {
     debug_assert!(y.len() >= 2 && k >= 1);
-    let mut u: Vec<u32> = vec![0u32; k + 2];
-    let (i, v) = icwrs(k, y, &mut u);
-    enc.encode_uint(i, v);
+    enc.encode_uint(icwrs(y), pvq_codebook_size(y.len(), k));
 }
 
 #[cfg(test)]
@@ -191,18 +253,13 @@ mod tests {
             for k in 1..=6usize {
                 let v = pvq_codebook_size(n, k);
                 for i in 0..v {
-                    let mut u = vec![0u32; k + 2];
-                    ncwrs_urow(n, k, &mut u);
-                    let mut y = vec![0i32; n];
-                    cwrsi(k, i, &mut y, &mut u);
+                    let mut y = alloc::vec![0i32; n];
+                    cwrsi(n, k, i, &mut y);
 
                     let pulses: u32 = y.iter().map(|x| x.unsigned_abs()).sum();
                     assert_eq!(pulses, k as u32, "N={n} K={k} i={i}: pulse count");
 
-                    let mut scratch = vec![0u32; k + 2];
-                    let (back, nc) = icwrs(k, &y, &mut scratch);
-                    assert_eq!(back, i, "N={n} K={k}: index round-trip");
-                    assert_eq!(nc, v, "N={n} K={k}: V agreement");
+                    assert_eq!(icwrs(&y), i, "N={n} K={k}: index round-trip");
                 }
             }
         }
