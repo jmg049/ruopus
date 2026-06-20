@@ -119,6 +119,80 @@ fn dot_scalar(x: &[f32], y: &[f32]) -> f32 {
     s
 }
 
+/// `acc0 + Σ_i (buf[i]·coef[i]) >> 16`, each term wrapping into `i32` exactly as
+/// a chain of `silk_SMLAWB`s - bit-identical to the scalar fixed-point loop, so
+/// SILK's NSQ output (and the bitstream) is unchanged. `coef.len()` taps are
+/// read; `buf` must be at least that long.
+///
+/// Bit-exactness: each `(buf·coef) >> 16` fits `i32` (`|buf|<2^31`, `|coef|<2^15`
+/// → product `<2^46`, shifted `<2^30`), and `i32` wrapping addition is
+/// associative, so summing per-lane and folding at the end matches the
+/// sequential chain. The product's value lives in bits `[47:16]`, which a
+/// *logical* 64-bit `>>16` places in the low 32 bits - no arithmetic shift
+/// needed.
+#[must_use]
+#[cfg_attr(target_arch = "x86_64", allow(unsafe_code))]
+pub(crate) fn dot_smlawb_q16(acc0: i32, buf: &[i32], coef: &[i16]) -> i32 {
+    let n = coef.len();
+    debug_assert!(buf.len() >= n);
+    #[cfg(target_arch = "x86_64")]
+    {
+        if has_avx2() {
+            // SAFETY: AVX2 gated by runtime detection; the kernel reads 8-wide
+            // from `buf`/`coef` only where `i + 8 ≤ n ≤ buf.len()`, scalar tail
+            // otherwise.
+            return unsafe { dot_smlawb_q16_avx2(acc0, buf, coef) };
+        }
+    }
+    let mut acc = acc0;
+    for i in 0..n {
+        acc = acc.wrapping_add(((i64::from(buf[i]) * i64::from(coef[i])) >> 16) as i32);
+    }
+    acc
+}
+
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+#[target_feature(enable = "avx2")]
+unsafe fn dot_smlawb_q16_avx2(acc0: i32, buf: &[i32], coef: &[i16]) -> i32 {
+    use core::arch::x86_64::*;
+    let n = coef.len();
+    let (bp, cp) = (buf.as_ptr(), coef.as_ptr());
+    // SAFETY: 8-wide loads start at `i` with `i + 8 ≤ n ≤ buf.len()`; the scalar
+    // tail covers the remainder.
+    unsafe {
+        // Accumulate four i64 lanes; each lane's low 32 bits hold a wrapping
+        // i32 partial sum of the terms that landed in it.
+        let mut acc = _mm256_setzero_si256();
+        let mut i = 0;
+        while i + 8 <= n {
+            let b = _mm256_loadu_si256(bp.add(i).cast());
+            // 8×i16 coefficients → 8×i32 (sign-extended).
+            let c = _mm256_cvtepi16_epi32(_mm_loadu_si128(cp.add(i).cast()));
+            // i32×i32→i64 for even lanes (0,2,4,6) and odd lanes (1,3,5,7).
+            let even = _mm256_mul_epi32(b, c);
+            let odd = _mm256_mul_epi32(_mm256_srli_epi64(b, 32), _mm256_srli_epi64(c, 32));
+            // >>16: logical is fine - each term fits i32, value lives in [47:16].
+            acc = _mm256_add_epi64(acc, _mm256_srli_epi64(even, 16));
+            acc = _mm256_add_epi64(acc, _mm256_srli_epi64(odd, 16));
+            i += 8;
+        }
+        // Fold the four lanes' low-32 partial sums (wrapping i32).
+        let lo = _mm256_castsi256_si128(acc);
+        let hi = _mm256_extracti128_si256::<1>(acc);
+        let mut sum = acc0
+            .wrapping_add(_mm_cvtsi128_si32(lo))
+            .wrapping_add(_mm_cvtsi128_si32(_mm_srli_si128::<8>(lo)))
+            .wrapping_add(_mm_cvtsi128_si32(hi))
+            .wrapping_add(_mm_cvtsi128_si32(_mm_srli_si128::<8>(hi)));
+        while i < n {
+            sum = sum.wrapping_add(((i64::from(*bp.add(i)) * i64::from(*cp.add(i))) >> 16) as i32);
+            i += 1;
+        }
+        sum
+    }
+}
+
 /// `Σ x[i]·y[i]` accumulated in `f64` (inputs are `f32`). For the SILK pitch
 /// analysis, whose reference helpers accumulate in double precision and whose
 /// outputs are pinned against the reference - using a `f64` accumulator keeps
@@ -371,5 +445,33 @@ unsafe fn dot_f64_sse2(x: &[f32], y: &[f32]) -> f64 {
             i += 1;
         }
         s
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `dot_smlawb_q16` must be bit-identical to the scalar SMLAWB chain for
+    /// every length (NSQ relies on this - it feeds the bitstream).
+    #[test]
+    fn smlawb_dot_matches_scalar() {
+        // A cheap deterministic LCG for varied i32/i16 inputs.
+        let mut s: u64 = 0x1234_5678_9abc_def1;
+        let mut next = || {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (s >> 33) as u32
+        };
+        for n in 0..40usize {
+            let buf: alloc::vec::Vec<i32> = (0..n.max(1) + 3).map(|_| next() as i32).collect();
+            let coef: alloc::vec::Vec<i16> = (0..n).map(|_| next() as i16).collect();
+            let acc0 = next() as i32;
+            let mut want = acc0;
+            for i in 0..n {
+                want = want.wrapping_add(((i64::from(buf[i]) * i64::from(coef[i])) >> 16) as i32);
+            }
+            let got = dot_smlawb_q16(acc0, &buf, &coef);
+            assert_eq!(got, want, "n={n}");
+        }
     }
 }

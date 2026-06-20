@@ -99,34 +99,28 @@ pub(crate) struct NsqConfig {
 }
 
 /// `silk_noise_shape_quantizer_short_prediction`: the LPC prediction (Q10).
-fn short_prediction(buf: &[i32], base: usize, coef: &[i16], order: usize) -> i32 {
-    let mut out = (order >> 1) as i32;
-    for j in 0..order {
-        out = smlawb(out, buf[base - j], i32::from(coef[j]));
-    }
-    out
+///
+/// `coef_rev` is the prediction coefficients reversed (so the descending
+/// history access `buf[base-j]·coef[j]` becomes a forward windowed dot the
+/// fixed-point SIMD kernel handles); it is reversed once per subframe by the
+/// caller. The result is bit-identical to the scalar SMLAWB chain.
+fn short_prediction(buf: &[i32], base: usize, coef_rev: &[i16]) -> i32 {
+    let order = coef_rev.len();
+    crate::simd::dot_smlawb_q16((order >> 1) as i32, &buf[base + 1 - order..=base], coef_rev)
 }
 
 /// `silk_NSQ_noise_shape_feedback_loop`: AR shaping with the shift-register
 /// state `data1` (`sAR2_Q14`), driven by the new sample `data0`. Returns Q12.
 fn noise_shape_feedback_loop(data0: i32, data1: &mut [i32], coef: &[i16], order: usize) -> i32 {
-    let mut tmp2 = data0;
-    let mut tmp1 = data1[0];
-    data1[0] = tmp2;
-    let mut out = (order >> 1) as i32;
-    out = smlawb(out, tmp2, i32::from(coef[0]));
-    let mut j = 2;
-    while j < order {
-        tmp2 = data1[j - 1];
-        data1[j - 1] = tmp1;
-        out = smlawb(out, tmp1, i32::from(coef[j - 1]));
-        tmp1 = data1[j];
-        data1[j] = tmp2;
-        out = smlawb(out, tmp2, i32::from(coef[j]));
-        j += 2;
-    }
-    data1[order - 1] = tmp1;
-    out = smlawb(out, tmp1, i32::from(coef[order - 1]));
+    // The reference fuses a right-shift of the AR state with the dot product:
+    // the new state is `data0` prepended and the last tap dropped, and the
+    // output is `Σ new_state[k]·coef[k]`. Materialise the shifted state, take
+    // the fixed-point SIMD dot (bit-identical to the SMLAWB chain), write back.
+    let mut shifted = [0i32; MAX_SHAPE_LPC_ORDER];
+    shifted[0] = data0;
+    shifted[1..order].copy_from_slice(&data1[..order - 1]);
+    let out = crate::simd::dot_smlawb_q16((order >> 1) as i32, &shifted[..order], &coef[..order]);
+    data1[..order].copy_from_slice(&shifted[..order]);
     out << 1
 }
 
@@ -217,10 +211,18 @@ fn noise_shape_quantizer(
     // `psLPC` index into s_lpc_q14 (starts at NSQ_LPC_BUF_LENGTH - 1).
     let mut p_lpc = NSQ_LPC_BUF_LENGTH - 1;
 
+    // The prediction coefficients are constant over the subframe; reverse them
+    // once so the per-sample prediction is a forward windowed dot.
+    let mut a_rev = [0i16; MAX_LPC_ORDER];
+    for j in 0..predict_lpc_order {
+        a_rev[j] = a_q12[predict_lpc_order - 1 - j];
+    }
+    let a_rev = &a_rev[..predict_lpc_order];
+
     for i in 0..length {
         nsq.rand_seed = rand(nsq.rand_seed);
 
-        let lpc_pred_q10 = short_prediction(&nsq.s_lpc_q14, p_lpc, a_q12, predict_lpc_order);
+        let lpc_pred_q10 = short_prediction(&nsq.s_lpc_q14, p_lpc, a_rev);
 
         let ltp_pred_q13 = if signal_type == TYPE_VOICED {
             let mut p = 2i32;
