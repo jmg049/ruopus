@@ -228,6 +228,7 @@ impl CeltEncoder {
         // no-op once it is the right length, so no per-frame zeroing.
         let mut inputs = core::mem::take(&mut self.scratch_inputs);
         inputs.resize(in_len * channels, 0.0);
+        let _pe_g = crate::prof::scope("celt:preemph");
         for c in 0..channels {
             let input = &mut inputs[c * in_len..(c + 1) * in_len];
             input[..OVERLAP].copy_from_slice(&self.in_mem[c]);
@@ -239,6 +240,7 @@ impl CeltEncoder {
             }
             self.preemph_mem[c] = mem;
         }
+        drop(_pe_g);
 
         // Pitch pre-filter: estimate the pitch, comb-filter `inputs` in place
         // to whiten the harmonic structure, and return the decision to code.
@@ -257,6 +259,7 @@ impl CeltEncoder {
 
         // Transient decision (`transient_analysis`); the flag needs 3 bits.
         let (is_transient, tf_estimate, tf_chan) = if lm > 0 && enc.tell() + 3 <= total_bits {
+            let _g = crate::prof::scope("celt:transient");
             transient_analysis(&inputs, in_len, channels)
         } else {
             (false, 0.0, 0)
