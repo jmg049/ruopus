@@ -355,13 +355,16 @@ impl SilkChannelEncoder {
             predict_lpc_order: order,
             shaping_lpc_order,
         };
-        let lambda_q10 = (gres.lambda * 1024.0) as i32;
+        // Lambda (RD trade-off) and the quantiser offset can be adjusted by the
+        // rate-control loop when a frame is stuck above the cap.
+        let mut lambda_q10 = (gres.lambda * 1024.0) as i32;
+        let mut quant_offset_type = gres.quant_offset_type;
 
-        // Assemble the side info; `gains_indices` is filled per rate-control
-        // iteration below.
+        // Assemble the side info; `gains_indices` and `quant_offset_type` are
+        // refreshed per rate-control iteration below.
         let mut indices = SideInfoIndices {
             signal_type: signal_type as i8,
-            quant_offset_type: gres.quant_offset_type as i8,
+            quant_offset_type: quant_offset_type as i8,
             nlsf_interp_coef_q2: 4,
             seed: seed as i8,
             ..SideInfoIndices::default()
@@ -394,13 +397,14 @@ impl SilkChannelEncoder {
         // toward the cap - re-running NSQ and re-coding from a snapshot each
         // time. The best fitting attempt is restored at the end.
         //
-        // Capped at the reference's 1024 (4×) ceiling over 6 iterations; a rare
-        // loud transient that still busts at 4× is left over budget and the
-        // caller (encode_auto) falls back to CELT, which codes it far better
-        // than extreme-gain SILK (driving the gain higher tanks the
-        // energy-weighted SNR of that frame). The reference's zero-pulse damage
-        // control (which would desync our decoder without a synthesis resync),
-        // per-subframe gain locking and lambda adjustment are future refinements.
+        // When a frame stays stuck above the cap the loop also raises the RD
+        // lambda + drops the dither and locks each subframe to its sparsest
+        // multiplier, both from the reference. Capped at the reference's 1024
+        // (4×) ceiling over 6 iterations; a rare loud transient that still busts
+        // at 4× is left over budget and the caller (encode_auto) falls back to
+        // CELT, which codes it far better than extreme-gain SILK. The reference's
+        // zero-pulse damage control (which would desync our decoder without a
+        // synthesis resync) is the one remaining refinement.
         let mut pulses = vec![0i8; frame_length];
         let mut gains_q16 = gres.gains_q16;
         let mut gains_indices = gres.gains_indices;
@@ -411,6 +415,9 @@ impl SilkChannelEncoder {
         let (mut found_lower, mut found_upper) = (false, false);
         let (mut gm_lower, mut gm_upper) = (0i32, 0i32);
         let (mut nb_lower, mut nb_upper) = (0i32, 0i32);
+        let mut gain_lock = [false; MAX_NB_SUBFR];
+        let mut best_gain_mult = [256i32; MAX_NB_SUBFR];
+        let mut best_sum = [0i32; MAX_NB_SUBFR];
         let mut iter = 0;
         loop {
             if iter > 0 {
@@ -422,8 +429,10 @@ impl SilkChannelEncoder {
                 self.last_gain_index = last_gain_prev;
                 let mut pg = [0i32; MAX_NB_SUBFR];
                 for (k, pg_k) in pg.iter_mut().enumerate().take(self.nb_subfr) {
-                    // pGains_Q16 = LSHIFT_SAT32(SMULWB(GainsUnq_Q16, gainMult_Q8), 8).
-                    let v = i64::from(smulwb(gres.gains_unq_q16[k], gain_mult_q8)) << 8;
+                    // pGains_Q16 = LSHIFT_SAT32(SMULWB(GainsUnq_Q16, gainMult_Q8), 8),
+                    // using each subframe's locked multiplier when it has one.
+                    let gm = if gain_lock[k] { best_gain_mult[k] } else { gain_mult_q8 };
+                    let v = i64::from(smulwb(gres.gains_unq_q16[k], gm)) << 8;
                     *pg_k = v.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
                 }
                 let mut gi = [0i8; MAX_NB_SUBFR];
@@ -442,7 +451,7 @@ impl SilkChannelEncoder {
                 &mut self.nsq,
                 &cfg,
                 signal_type,
-                gres.quant_offset_type,
+                quant_offset_type,
                 4,
                 seed,
                 input,
@@ -459,6 +468,7 @@ impl SilkChannelEncoder {
                 ltp_scale_q14,
             );
             indices.gains_indices[..self.nb_subfr].copy_from_slice(&gains_indices[..self.nb_subfr]);
+            indices.quant_offset_type = quant_offset_type as i8;
             encode_indices(
                 enc,
                 &indices,
@@ -469,7 +479,7 @@ impl SilkChannelEncoder {
                 cond_coding,
                 &mut self.ec_prev,
             );
-            encode_pulses(enc, signal_type, gres.quant_offset_type, &pulses, frame_length);
+            encode_pulses(enc, signal_type, quant_offset_type, &pulses, frame_length);
 
             let Some(max_bits) = max_bits else { break };
             let n_bits = enc.tell() as i32;
@@ -477,7 +487,20 @@ impl SilkChannelEncoder {
             if iter == 0 && n_bits <= max_bits {
                 break;
             }
-            if n_bits <= max_bits {
+            if n_bits > max_bits {
+                if !found_lower && iter >= 2 {
+                    // Stuck above the cap: trade more distortion for rate (raise
+                    // lambda) and drop the dither (quantOffsetType = 0), then
+                    // discard the stale upper bracket.
+                    lambda_q10 = (lambda_q10 * 3 / 2).max(1536);
+                    quant_offset_type = 0;
+                    found_upper = false;
+                } else {
+                    found_upper = true;
+                    nb_upper = n_bits;
+                    gm_upper = gain_mult_q8;
+                }
+            } else if n_bits < max_bits - bits_margin {
                 best_fit = Some((
                     enc.clone(),
                     self.nsq.clone(),
@@ -485,17 +508,33 @@ impl SilkChannelEncoder {
                     self.last_gain_index,
                     indices.gains_indices,
                 ));
-                if n_bits >= max_bits - bits_margin {
-                    break; // close enough to the cap
-                }
                 found_lower = true;
                 nb_lower = n_bits;
                 gm_lower = gain_mult_q8;
             } else {
-                found_upper = true;
-                nb_upper = n_bits;
-                gm_upper = gain_mult_q8;
+                // Close enough to the cap - accept this attempt.
+                break;
             }
+
+            // Per-subframe gain lock: while still over budget without a lower
+            // bracket, remember the multiplier that gave each subframe its
+            // sparsest pulses, and lock subframes that stop improving so the
+            // global multiplier does not over-coarsen them.
+            if !found_lower && n_bits > max_bits {
+                for k in 0..self.nb_subfr {
+                    let sum: i32 = pulses[k * subfr_length..(k + 1) * subfr_length]
+                        .iter()
+                        .map(|&p| i32::from(p).abs())
+                        .sum();
+                    if iter == 0 || (sum < best_sum[k] && !gain_lock[k]) {
+                        best_sum[k] = sum;
+                        best_gain_mult[k] = gain_mult_q8;
+                    } else {
+                        gain_lock[k] = true;
+                    }
+                }
+            }
+
             if iter >= 6 {
                 break;
             }

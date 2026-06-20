@@ -24,9 +24,8 @@ Differences from the reference (`silk_encode_frame_FLP`):
   Impact: on a 9.4 s speech clip exactly one loud-transient frame falls back
   (super-wideband 24 kb/s); the CELT fallback actually codes that frame
   *better* than extreme-gain SILK would, so this is low priority.
-- **No per-subframe gain locking** (`gain_lock`/`best_gain_mult`) and **no
-  lambda adjustment** (`Lambda *= 1.5`, `quantOffsetType = 0` when stuck).
-  Both are quality refinements for capped frames.
+  (Per-subframe gain locking and the lambda/quant-offset adjustment for stuck
+  frames are now implemented; only the damage control remains.)
 
 ## Hybrid SILK/CELT split (`encoder.rs`)
 
