@@ -24,6 +24,9 @@ fn bench(label: &str, ch: usize, bw: Bandwidth, br: u32, frames: usize) {
     let mut enc = OpusEncoder::new(ch);
     enc.set_bandwidth(bw);
     enc.set_bitrate(Some(br));
+    if let Some(c) = std::env::var("OPUS_BENCH_COMPLEXITY").ok().and_then(|v| v.parse().ok()) {
+        enc.set_complexity(c);
+    }
     for s in &sigs {
         let _ = enc.encode_auto(s, 1275); // warm up lazily-created state
     }
