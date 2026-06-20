@@ -248,21 +248,28 @@ unsafe fn dot_avx2(x: &[f32], y: &[f32]) -> f32 {
     use core::arch::x86_64::*;
     let n = x.len();
     let (xp, yp) = (x.as_ptr(), y.as_ptr());
-    // SAFETY: every load below starts at `i` with `i + width ≤ n ≤ len`.
+    // SAFETY: every load below starts at `i` with `i + width ≤ n ≤ len`. Four
+    // accumulators hide the FMA latency for long dots; short dots fall straight
+    // to the 8-wide tail.
     unsafe {
         let mut a0 = _mm256_setzero_ps();
         let mut a1 = _mm256_setzero_ps();
+        let mut a2 = _mm256_setzero_ps();
+        let mut a3 = _mm256_setzero_ps();
         let mut i = 0;
-        while i + 16 <= n {
+        while i + 32 <= n {
             a0 = _mm256_fmadd_ps(_mm256_loadu_ps(xp.add(i)), _mm256_loadu_ps(yp.add(i)), a0);
             a1 = _mm256_fmadd_ps(_mm256_loadu_ps(xp.add(i + 8)), _mm256_loadu_ps(yp.add(i + 8)), a1);
-            i += 16;
+            a2 = _mm256_fmadd_ps(_mm256_loadu_ps(xp.add(i + 16)), _mm256_loadu_ps(yp.add(i + 16)), a2);
+            a3 = _mm256_fmadd_ps(_mm256_loadu_ps(xp.add(i + 24)), _mm256_loadu_ps(yp.add(i + 24)), a3);
+            i += 32;
         }
-        if i + 8 <= n {
+        let mut a0 = _mm256_add_ps(_mm256_add_ps(a0, a1), _mm256_add_ps(a2, a3));
+        while i + 8 <= n {
             a0 = _mm256_fmadd_ps(_mm256_loadu_ps(xp.add(i)), _mm256_loadu_ps(yp.add(i)), a0);
             i += 8;
         }
-        let mut s = hsum256(_mm256_add_ps(a0, a1));
+        let mut s = hsum256(a0);
         while i < n {
             s += *xp.add(i) * *yp.add(i);
             i += 1;
@@ -391,14 +398,30 @@ unsafe fn dot_f64_avx2(x: &[f32], y: &[f32]) -> f64 {
     let n = x.len();
     let (xp, yp) = (x.as_ptr(), y.as_ptr());
     // SAFETY: each 4-wide f32 load starts at `i` with `i + 4 ≤ n ≤ len`; the
-    // products are widened to f64 and accumulated in four f64 lanes.
+    // products are widened to f64. Four independent accumulators hide the FMA
+    // latency (the loop would otherwise be latency-bound on a single chain).
     unsafe {
-        let mut acc = _mm256_setzero_pd();
+        let mut a0 = _mm256_setzero_pd();
+        let mut a1 = _mm256_setzero_pd();
+        let mut a2 = _mm256_setzero_pd();
+        let mut a3 = _mm256_setzero_pd();
         let mut i = 0;
+        while i + 16 <= n {
+            let p = |o: usize| _mm256_cvtps_pd(_mm_loadu_ps(xp.add(o)));
+            let q = |o: usize| _mm256_cvtps_pd(_mm_loadu_ps(yp.add(o)));
+            a0 = _mm256_fmadd_pd(p(i), q(i), a0);
+            a1 = _mm256_fmadd_pd(p(i + 4), q(i + 4), a1);
+            a2 = _mm256_fmadd_pd(p(i + 8), q(i + 8), a2);
+            a3 = _mm256_fmadd_pd(p(i + 12), q(i + 12), a3);
+            i += 16;
+        }
+        let mut acc = _mm256_add_pd(_mm256_add_pd(a0, a1), _mm256_add_pd(a2, a3));
         while i + 4 <= n {
-            let xf = _mm256_cvtps_pd(_mm_loadu_ps(xp.add(i)));
-            let yf = _mm256_cvtps_pd(_mm_loadu_ps(yp.add(i)));
-            acc = _mm256_fmadd_pd(xf, yf, acc);
+            acc = _mm256_fmadd_pd(
+                _mm256_cvtps_pd(_mm_loadu_ps(xp.add(i))),
+                _mm256_cvtps_pd(_mm_loadu_ps(yp.add(i))),
+                acc,
+            );
             i += 4;
         }
         // Horizontal sum of the 4 f64 lanes.
