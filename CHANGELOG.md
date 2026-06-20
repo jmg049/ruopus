@@ -8,6 +8,7 @@ All notable changes to this project will be documented in this file.
 - **BREAKING:** the `spectrograms` FFT backend is now a default feature - the default build decodes at ~410-730× realtime (one core) vs ~10× with the built-in evaluation; use `default-features = false` for the zero-dependency build
 
 ### Fixed
+- Decoder no longer panics on malformed/corrupt packets (a DoS surface): `force_tell` underflowed past the silence-path force-fill target, and the hybrid redundancy split underflowed `len - redundancy_bytes` in unsigned arithmetic - both now match the reference's signed semantics. Found by differential fuzzing (1M+ iterations clean); guarded by `tests/robustness.rs`
 - Hybrid encoding no longer panics on loud frames: the CELT coarse-energy quantiser compared `budget - tell` as unsigned, which underflowed when the SILK low band pushed the range coder past the budget; it now uses signed arithmetic like the reference, and a genuine SILK/CELT budget overrun returns `EncodeError::InvalidBudget` instead of panicking
 
 ### Added

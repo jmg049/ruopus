@@ -394,18 +394,24 @@ impl OpusDecoder {
             };
             if redundancy {
                 celt_to_silk = dec.decode_bit_logp(1);
-                redundancy_bytes = if mode == Mode::Hybrid {
-                    dec.decode_uint(256).unwrap_or(0) as usize + 2
+                // Signed like the reference (`len` is `opus_int32`): a corrupt
+                // `redundancy_bytes > len` drives `len` negative, which the
+                // sanity check below catches - so compute in i64, never
+                // underflowing the `usize`.
+                let rb = if mode == Mode::Hybrid {
+                    i64::from(dec.decode_uint(256).unwrap_or(0)) + 2
                 } else {
-                    len - ((dec.tell() as usize + 7) >> 3)
+                    len as i64 - ((dec.tell() as i64 + 7) >> 3)
                 };
-                len -= redundancy_bytes;
+                let len_after = len as i64 - rb;
                 // Sanity check (non-normative behaviour for bad packets).
-                if len * 8 < dec.tell() as usize {
+                if len_after * 8 < dec.tell() as i64 {
                     len = 0;
                     redundancy_bytes = 0;
                     redundancy = false;
                 } else {
+                    len = len_after as usize;
+                    redundancy_bytes = rb as usize;
                     // Keep CELT's raw bits out of the redundant tail.
                     dec.shrink_storage(len);
                 }

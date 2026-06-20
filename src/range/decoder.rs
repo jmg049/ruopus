@@ -269,8 +269,12 @@ impl<'a> RangeDecoder<'a> {
     #[cfg(feature = "std")]
     pub(crate) fn force_tell(&mut self, bits: u32) {
         let current = self.tell();
-        debug_assert!(bits >= current);
-        self.nbits_total += bits - current;
+        // On a valid stream the silence flag is read early, so `current <= bits`
+        // and we advance to the target. Corrupted input can leave the coder
+        // already past it; advancing then is a no-op (never underflow).
+        if bits > current {
+            self.nbits_total += bits - current;
+        }
     }
 
     /// Truncates the buffer to `new_len` bytes (`dec.storage -=

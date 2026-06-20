@@ -69,6 +69,14 @@ required-features = ["std"]
 name = "encoder_quality"
 required-features = ["std"]
 
+[[example]]
+name = "fuzz_encode"
+required-features = ["std"]
+
+[[example]]
+name = "fuzz_decode"
+required-features = ["std"]
+
 [lints.rust]
 missing_docs = "warn"
 unsafe_code = "forbid"
