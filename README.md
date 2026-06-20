@@ -3,7 +3,7 @@
 A pure-Rust implementation of the [Opus audio codec](https://opus-codec.org/)
 ([RFC 6716](https://www.rfc-editor.org/rfc/rfc6716)).
 
-**No FFI. No unsafe code. No dependencies.**
+**No FFI. No dependencies. Unsafe only in documented SIMD kernels.**
 
 > **Status: pre-release, under active development.** The decoder is
 > feature-complete and passes the official conformance criterion: all twelve
@@ -32,7 +32,13 @@ framework.
 - **Decode-first**: the decoder is the normative half of the spec and the half
   that conformance vectors exercise. Encoder work follows decoder work at every
   layer.
-- **`forbid(unsafe_code)`**: enforced at the crate level.
+- **`unsafe` denied by default**: the crate lint is `unsafe_code = "deny"`, so
+  `unsafe` is rejected everywhere except a few explicitly-annotated SIMD hot
+  loops, each with a `// SAFETY:` justification and listed in
+  [`docs/unsafe.md`](docs/unsafe.md). The only `unsafe` is hand-written
+  `std::arch` SIMD (no nightly `portable_simd`, no inline asm); it sits on the
+  encoder path where the range coder - not the pulse choice - defines the
+  bitstream, so every round-trip and conformance test passes either way.
 - **`no_std` + `alloc`**: the `std` feature (on by default) only adds
   `std::error::Error` impls and conveniences.
 - **Fast by default, zero-dep by choice**: the codec targets near-real-time
@@ -97,13 +103,15 @@ libopus's default (what callers usually get):
 
 | Mode | `opus_native` | libopus c0 | libopus c10 (default) |
 |------|---------------|------------|-----------------------|
-| SILK wideband 16 kb/s | 385× | 725× | 215× |
-| hybrid fullband 32 kb/s | 200× | 560× | 190× |
-| CELT fullband 64 kb/s | 305× | 1080× | 430× |
+| SILK wideband 16 kb/s | 370× | 740× | 220× |
+| hybrid fullband 32 kb/s | 205× | 550× | 190× |
+| CELT fullband 64 kb/s | 355× | 1060× | 400× |
 
-At matched complexity libopus's encoder is ~2-3.5× faster (SIMD + years of
+At matched complexity libopus's encoder is ~2-3× faster (SIMD + years of
 tuning); against its default complexity we are faster on speech and comparable
-on hybrid. Every mode encodes and decodes at hundreds of × realtime.
+on hybrid and CELT. CELT encode gained ~15-20% from an SSE2 port of the PVQ
+pulse search (the O(K·N) band-encode hot loop); every mode encodes and decodes
+at hundreds of × realtime.
 
 ## Conformance
 

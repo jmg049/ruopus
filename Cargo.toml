@@ -6,7 +6,7 @@ rust-version = "1.85"
 authors = ["Jack Geraghty <jgeraghty049@gmail.com>"]
 license = "MIT"
 readme = "README.md"
-description = "A pure-Rust implementation of the Opus audio codec (RFC 6716). No FFI, no unsafe code, no dependencies."
+description = "A pure-Rust implementation of the Opus audio codec (RFC 6716). No FFI, no dependencies; unsafe confined to documented SIMD kernels."
 repository = "https://github.com/jmg049/opus_native"
 documentation = "https://docs.rs/opus_native"
 keywords = ["opus", "audio", "codec", "decoder", "rfc6716"]
@@ -89,7 +89,10 @@ required-features = ["std"]
 
 [lints.rust]
 missing_docs = "warn"
-unsafe_code = "forbid"
+# `unsafe` is denied by default and only allowed at explicitly-annotated sites,
+# each with a `// SAFETY:` justification (currently just the SIMD kernels - see
+# docs/unsafe.md). It is never permitted accidentally.
+unsafe_code = "deny"
 
 [lints.clippy]
 undocumented_unsafe_blocks = "deny"

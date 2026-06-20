@@ -225,9 +225,28 @@ pub(crate) fn stereo_itheta(x: &[f32], y: &[f32], stereo: bool) -> i32 {
     (0.5 + 16384.0 * TWO_OVER_PI * fast_atan2f(side, mid)).floor() as i32
 }
 
+/// Finds the K-pulse vector maximising correlation with `x`, writing the
+/// signed pulse counts into `iy`. Dispatches to the SSE2 kernel on x86-64
+/// (where SSE2 is guaranteed by the baseline ABI) and to the scalar search
+/// elsewhere. Both produce a valid (round-trippable) pulse vector; the SIMD
+/// path's `rsqrt` approximation may pick a marginally different - still
+/// conformant - vector. See [`super::vq_simd`] and `docs/unsafe.md`.
+#[inline]
+fn op_pvq_search(x: &mut [f32], iy: &mut [i32], k: usize) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        super::vq_simd::op_pvq_search(x, iy, k)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        op_pvq_search_scalar(x, iy, k)
+    }
+}
+
 /// `op_pvq_search` (float build): finds the K-pulse vector maximising
 /// correlation with `x` (made non-negative in place).
-fn op_pvq_search(x: &mut [f32], iy: &mut [i32], k: usize) -> f32 {
+#[cfg_attr(target_arch = "x86_64", allow(dead_code))]
+fn op_pvq_search_scalar(x: &mut [f32], iy: &mut [i32], k: usize) -> f32 {
     let n = x.len();
     let mut y = vec![0.0f32; n];
     let mut signx = vec![false; n];

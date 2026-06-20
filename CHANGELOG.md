@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- CELT encode is ~15-20% faster (fullband 64 kb/s ~305×→~355× realtime) from an SSE2 port of the PVQ pulse search (`op_pvq_search`, the O(K·N) band-encode hot loop). The crate now permits `unsafe` at explicitly-annotated SIMD sites - the lint is relaxed from `forbid` to `deny`, every site carries a `// SAFETY:` justification listed in `docs/unsafe.md`. Still no FFI and no dependencies; decode conformance is unchanged (the range coder, not the encoder's pulse choice, defines the bitstream)
 - **BREAKING:** the `spectrograms` FFT backend is now a default feature - the default build decodes at ~410-730× realtime (one core) vs ~10× with the built-in evaluation; use `default-features = false` for the zero-dependency build
 
 ### Fixed

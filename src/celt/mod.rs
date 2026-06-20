@@ -38,3 +38,5 @@ pub(crate) mod plc;
 pub mod rate;
 pub mod tables;
 pub mod vq;
+#[cfg(target_arch = "x86_64")]
+mod vq_simd;
