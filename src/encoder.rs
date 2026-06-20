@@ -103,15 +103,15 @@ pub struct OpusEncoder {
     /// for the current internal rate / subframe configuration.
     silk: Option<(
         crate::silk::encode::api::SilkEncoder,
-        crate::silk::resampler::Resampler,
+        crate::silk::encode::resample_in::EncDownsampler,
         i32,
         usize,
     )>,
     /// Stereo SILK encoder + per-channel input resamplers (created lazily).
     silk_stereo: Option<(
         crate::silk::encode::api::SilkStereoEncoder,
-        crate::silk::resampler::Resampler,
-        crate::silk::resampler::Resampler,
+        crate::silk::encode::resample_in::EncDownsampler,
+        crate::silk::encode::resample_in::EncDownsampler,
         i32,
         usize,
     )>,
@@ -417,9 +417,6 @@ impl OpusEncoder {
         let pcm = self.dc_reject(pcm);
         let pcm = pcm.as_slice();
 
-        // 48 kHz f32 → i16.
-        let to_i16 = |v: f32| (v * 32768.0).round().clamp(-32768.0, 32767.0) as i16;
-
         let payload = if self.channels == 1 {
             let need_new = self
                 .silk
@@ -428,18 +425,14 @@ impl OpusEncoder {
             if need_new {
                 self.silk = Some((
                     crate::silk::encode::api::SilkEncoder::new(internal_khz, nb_subfr),
-                    crate::silk::resampler::Resampler::new_enc(48_000, internal_khz * 1000),
+                    crate::silk::encode::resample_in::EncDownsampler::new(internal_khz as usize),
                     internal_khz,
                     nb_subfr,
                 ));
             }
             let (silk, resampler, _, _) = self.silk.as_mut().expect("configured");
             silk.set_bitrate(bitrate.clamp(5000, 80_000));
-            let mut in16 = vec![0i16; pcm.len()];
-            crate::simd::scale_round_to_i16(&mut in16, pcm, 32768.0);
-            let out_len = per_ch * internal_khz as usize / 48;
-            let mut internal = vec![0i16; out_len];
-            resampler.process(&mut internal, &in16);
+            let internal = crate::silk::encode::resample_in::resample_48k(resampler, pcm);
             // Closed-loop rate control: fit the byte budget (less the TOC).
             let p = silk
                 .encode_capped(&internal, max_bytes - 1)
@@ -455,20 +448,18 @@ impl OpusEncoder {
             if need_new {
                 self.silk_stereo = Some((
                     crate::silk::encode::api::SilkStereoEncoder::new(internal_khz, nb_subfr),
-                    crate::silk::resampler::Resampler::new_enc(48_000, internal_khz * 1000),
-                    crate::silk::resampler::Resampler::new_enc(48_000, internal_khz * 1000),
+                    crate::silk::encode::resample_in::EncDownsampler::new(internal_khz as usize),
+                    crate::silk::encode::resample_in::EncDownsampler::new(internal_khz as usize),
                     internal_khz,
                     nb_subfr,
                 ));
             }
             let (silk, rl, rr, _, _) = self.silk_stereo.as_mut().expect("configured");
             silk.set_bitrate(bitrate.clamp(5000, 100_000));
-            let l16: Vec<i16> = pcm.iter().step_by(2).map(|&v| to_i16(v)).collect();
-            let r16: Vec<i16> = pcm.iter().skip(1).step_by(2).map(|&v| to_i16(v)).collect();
-            let out_len = per_ch * internal_khz as usize / 48;
-            let (mut li, mut ri) = (vec![0i16; out_len], vec![0i16; out_len]);
-            rl.process(&mut li, &l16);
-            rr.process(&mut ri, &r16);
+            let lf: Vec<f32> = pcm.iter().step_by(2).copied().collect();
+            let rf: Vec<f32> = pcm.iter().skip(1).step_by(2).copied().collect();
+            let li = crate::silk::encode::resample_in::resample_48k(rl, &lf);
+            let ri = crate::silk::encode::resample_in::resample_48k(rr, &rf);
             let p = silk.encode(&li, &ri);
             self.last_final_range = silk.final_range();
             p
@@ -531,8 +522,6 @@ impl OpusEncoder {
         let silk_bps = compute_silk_rate_for_hybrid(target, swb, self.channels as i32);
         let celt_floor = (celt_end - 17) * 3 + 3;
         let silk_cap = nb_bytes.saturating_sub(celt_floor).max(8);
-        let to_i16 = |v: f32| (v * 32768.0).round().clamp(-32768.0, 32767.0) as i16;
-        let internal_len = per_ch / 3; // 48 kHz → 16 kHz
 
         let pcm = self.dc_reject(pcm);
         let pcm = pcm.as_slice();
@@ -548,16 +537,14 @@ impl OpusEncoder {
             if need_new {
                 self.silk = Some((
                     crate::silk::encode::api::SilkEncoder::new(16, nb_subfr),
-                    crate::silk::resampler::Resampler::new_enc(48_000, 16_000),
+                    crate::silk::encode::resample_in::EncDownsampler::new(16),
                     16,
                     nb_subfr,
                 ));
             }
             let (silk, resampler, _, _) = self.silk.as_mut().expect("configured");
             silk.set_bitrate(silk_bps);
-            let in16: Vec<i16> = pcm.iter().map(|&v| to_i16(v)).collect();
-            let mut internal = vec![0i16; internal_len];
-            resampler.process(&mut internal, &in16);
+            let internal = crate::silk::encode::resample_in::resample_48k(resampler, pcm);
             // Hard bit cap so the SILK low band leaves the CELT high band room.
             silk.encode_into(&mut enc, &internal, Some((silk_cap * 8) as i32));
         } else {
@@ -569,19 +556,18 @@ impl OpusEncoder {
             if need_new {
                 self.silk_stereo = Some((
                     crate::silk::encode::api::SilkStereoEncoder::new(16, nb_subfr),
-                    crate::silk::resampler::Resampler::new_enc(48_000, 16_000),
-                    crate::silk::resampler::Resampler::new_enc(48_000, 16_000),
+                    crate::silk::encode::resample_in::EncDownsampler::new(16),
+                    crate::silk::encode::resample_in::EncDownsampler::new(16),
                     16,
                     nb_subfr,
                 ));
             }
             let (silk, rl, rr, _, _) = self.silk_stereo.as_mut().expect("configured");
             silk.set_bitrate(silk_bps);
-            let l16: Vec<i16> = pcm.iter().step_by(2).map(|&v| to_i16(v)).collect();
-            let r16: Vec<i16> = pcm.iter().skip(1).step_by(2).map(|&v| to_i16(v)).collect();
-            let (mut li, mut ri) = (vec![0i16; internal_len], vec![0i16; internal_len]);
-            rl.process(&mut li, &l16);
-            rr.process(&mut ri, &r16);
+            let lf: Vec<f32> = pcm.iter().step_by(2).copied().collect();
+            let rf: Vec<f32> = pcm.iter().skip(1).step_by(2).copied().collect();
+            let li = crate::silk::encode::resample_in::resample_48k(rl, &lf);
+            let ri = crate::silk::encode::resample_in::resample_48k(rr, &rf);
             // Hard bit cap so the stereo SILK low band leaves the CELT high
             // band room (mid + side share the cumulative budget).
             silk.encode_into(&mut enc, &li, &ri, Some((silk_cap * 8) as i32));
