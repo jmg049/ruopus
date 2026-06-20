@@ -281,10 +281,7 @@ impl CeltEncoder {
                 for i in 0..end {
                     let lo = m * EBANDS[i] as usize;
                     let hi = m * EBANDS[i + 1] as usize;
-                    let mut sum = 1e-27f32;
-                    for &v in &freq2[lo..hi] {
-                        sum += v * v;
-                    }
+                    let sum = 1e-27f32 + crate::simd::dot(&freq2[lo..hi], &freq2[lo..hi]);
                     band_log_e2[c][i] = sum.sqrt().log2() - E_MEANS[i] + 0.5 * lm as f32;
                 }
             } else {
@@ -295,10 +292,7 @@ impl CeltEncoder {
             for i in 0..end {
                 let lo = m * EBANDS[i] as usize;
                 let hi = m * EBANDS[i + 1] as usize;
-                let mut sum = 1e-27f32;
-                for &v in &freq[lo..hi] {
-                    sum += v * v;
-                }
+                let sum = 1e-27f32 + crate::simd::dot(&freq[lo..hi], &freq[lo..hi]);
                 band_e[c][i] = sum.sqrt();
                 band_log_e[c][i] = band_e[c][i].log2() - E_MEANS[i];
                 if !is_transient {
