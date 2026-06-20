@@ -67,6 +67,28 @@ fn exp_rotation1(x: &mut [f32], stride: usize, c: f32, s: f32) {
     }
 }
 
+/// `(cos(½π·θ), sin(½π·θ))` - the spreading rotation's gains. `θ = ½·gain²`
+/// with `gain ≤ 1`, so the angle is in `[0, π/4]`, where these short Taylor
+/// polynomials are accurate to far better than `f32` precision. This replaces
+/// two libm `cos` calls that were ~25% of CELT encode (the system libopus, a
+/// fixed-point build, uses a polynomial too). It is shared by encode and decode
+/// so the rotation stays exactly invertible; the coded pulse indices - and thus
+/// the range-coder state - are unaffected, only the spread shaping shifts by a
+/// hair (well within the conformance PCM tolerance).
+#[inline]
+fn rotation_gains(theta: f32) -> (f32, f32) {
+    let a = 0.5 * core::f32::consts::PI * theta;
+    let a2 = a * a;
+    let c = a2
+        .mul_add(
+            a2.mul_add(a2.mul_add(a2 * (1.0 / 40320.0), -1.0 / 720.0), 1.0 / 24.0),
+            -0.5,
+        )
+        .mul_add(a2, 1.0);
+    let s = a * a2.mul_add(a2.mul_add(a2.mul_add(-1.0 / 5040.0, 1.0 / 120.0), -1.0 / 6.0), 1.0);
+    (c, s)
+}
+
 /// The spreading rotation (`exp_rotation`); `dir` +1 rotates (encoder), -1
 /// counter-rotates (decoder). `b` is the number of interleaved blocks.
 pub(crate) fn exp_rotation(x: &mut [f32], dir: i32, b: usize, k: usize, spread: Spread) {
@@ -78,8 +100,7 @@ pub(crate) fn exp_rotation(x: &mut [f32], dir: i32, b: usize, k: usize, spread: 
 
     let gain = len as f32 / (len + factor as usize * k) as f32;
     let theta = 0.5 * gain * gain;
-    let c = (0.5 * core::f32::consts::PI * theta).cos();
-    let s = (0.5 * core::f32::consts::PI * (1.0 - theta)).cos(); // sin(theta)
+    let (c, s) = rotation_gains(theta);
 
     // An extra rotation pass with a longer stride approximating
     // sqrt(len/stride), for multi-block bands.
