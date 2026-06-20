@@ -103,14 +103,19 @@ libopus's default (what callers usually get):
 
 | Mode | `opus_native` | libopus c0 | libopus c10 (default) |
 |------|---------------|------------|-----------------------|
-| SILK wideband 16 kb/s | 370× | 740× | 220× |
-| hybrid fullband 32 kb/s | 205× | 550× | 190× |
-| CELT fullband 64 kb/s | 355× | 1060× | 400× |
+| SILK wideband 16 kb/s | **490×** | 725× | 210× |
+| hybrid fullband 32 kb/s | **290×** | 540× | 190× |
+| CELT fullband 64 kb/s | **593×** | 1015× | 410× |
 
-At matched complexity libopus's encoder is ~2-3× faster (SIMD + years of
-tuning); against its default complexity we are faster on speech and comparable
-on hybrid and CELT. CELT encode gained ~15-20% from an SSE2 port of the PVQ
-pulse search (the O(K·N) band-encode hot loop); every mode encodes and decodes
+`opus_native` now encodes **faster than libopus at its default complexity on
+every mode** (1.4-2.3×), and reaches 0.55-0.68× of libopus's matched
+complexity-0 speed - up from ~0.3-0.5× - after SIMD (AVX2+FMA / SSE2) of the
+encoder's correlation hot loops: the CELT PVQ pulse search, the CELT pre-filter
+pitch analysis (`celt_pitch_xcorr`, two-thirds of CELT encode), and the SILK
+pitch analysis (cross-/autocorrelation and LPC whitening, half of SILK encode).
+The remaining gap to complexity-0 is the serial recurrences (pre-emphasis, the
+transient detector's filters, the SILK noise-shaping quantiser), which the
+reference also runs scalar. Every mode encodes and decodes
 at hundreds of × realtime.
 
 ## Conformance
