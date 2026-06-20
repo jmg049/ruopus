@@ -81,19 +81,6 @@ fn compute_silk_rate_for_hybrid(rate: i32, swb: bool, channels: i32) -> i32 {
     silk_rate * channels.max(1)
 }
 
-/// Whether an interleaved frame carries activity (vs. silence), for the DTX
-/// decision: true when the mean square exceeds a near-silence threshold
-/// (≈ -60 dBFS). A simpler energy heuristic than libopus's VAD-based activity
-/// probability - it catches genuine silence and very quiet gaps.
-fn frame_is_active(pcm: &[f32]) -> bool {
-    const SILENCE_MS: f64 = 1e-6; // mean square ≈ (-60 dBFS)²
-    if pcm.is_empty() {
-        return false;
-    }
-    let ms = pcm.iter().map(|&v| f64::from(v) * f64::from(v)).sum::<f64>() / pcm.len() as f64;
-    ms > SILENCE_MS
-}
-
 /// A pure-Rust Opus encoder at 48 kHz, producing CELT, SILK (mono/stereo) and
 /// hybrid packets; [`encode_auto`](Self::encode_auto) chooses the mode.
 ///
@@ -143,6 +130,9 @@ pub struct OpusEncoder {
     /// TOC byte of the last coded packet, reused for DTX packets so they carry
     /// the stream's current mode/frame-size/channels.
     last_toc: u8,
+    /// Adaptive background-noise-floor estimate (mean square) for the DTX
+    /// activity detector, so pauses are detected relative to the ambient level.
+    dtx_noise_floor: f32,
 }
 
 impl OpusEncoder {
@@ -166,14 +156,40 @@ impl OpusEncoder {
             use_dtx: false,
             dtx_no_activity_q1: 0,
             last_toc: 0,
+            dtx_noise_floor: 1.0,
         }
     }
 
+    /// Voice-activity test for DTX: a frame is active when its mean-square
+    /// energy rises clearly above the tracked background-noise floor. The floor
+    /// follows the minimum energy with a slow upward leak, so DTX engages
+    /// during pauses even when there is audible background noise (which a fixed
+    /// -60 dBFS threshold would always call active). A small absolute floor
+    /// still classifies near-digital-silence as inactive.
+    fn frame_active(&mut self, pcm: &[f32]) -> bool {
+        const ACTIVE_RATIO: f32 = 8.0; // ~9 dB above the noise floor
+        const ABS_FLOOR: f32 = 1e-7; // mean square ≈ -70 dBFS
+        if pcm.is_empty() {
+            return false;
+        }
+        let ms = (pcm.iter().map(|&v| v * v).sum::<f32>() / pcm.len() as f32).max(0.0);
+        // Track the minimum, leaking up ~0.03 %/frame so the floor follows a
+        // rising ambient level rather than sticking at an old silence.
+        self.dtx_noise_floor = if ms < self.dtx_noise_floor {
+            ms
+        } else {
+            self.dtx_noise_floor * 1.0003
+        };
+        ms > (self.dtx_noise_floor * ACTIVE_RATIO).max(ABS_FLOOR)
+    }
+
     /// Enables or disables discontinuous transmission (`OPUS_SET_DTX`). With
-    /// DTX on, once the input has been inactive (near-silent) for 200 ms the
-    /// encoder emits a 1-byte TOC-only packet for each further inactive frame
-    /// (up to 400 ms, then one refresh frame), which the decoder conceals as
-    /// comfort noise - dropping the silence bitrate to ~0.4 kb/s.
+    /// DTX on, once the input has been inactive for 200 ms the encoder emits a
+    /// 1-byte TOC-only packet for each further inactive frame (up to 400 ms,
+    /// then one refresh frame), which the decoder conceals as comfort noise -
+    /// dropping the silence bitrate to ~0.4 kb/s. Activity is judged by an
+    /// adaptive energy detector that tracks the background-noise floor, so DTX
+    /// engages during pauses even with audible ambient noise.
     pub const fn set_dtx(&mut self, on: bool) {
         self.use_dtx = on;
     }
@@ -262,7 +278,7 @@ impl OpusEncoder {
         // per call so the no-activity run advances correctly.
         if self.use_dtx {
             if per_ch >= 480 {
-                let active = frame_is_active(pcm);
+                let active = self.frame_active(pcm);
                 let frame_ms_q1 = (per_ch as i32 * 2 * 1000) / 48_000;
                 if self.decide_dtx(active, frame_ms_q1) && self.last_toc != 0 {
                     self.last_final_range = 0;
@@ -710,6 +726,51 @@ mod tests {
         assert!(
             dtx_silence * 2 < plain_silence,
             "DTX silence {dtx_silence} B should be well under half of plain {plain_silence} B"
+        );
+    }
+
+    /// The adaptive activity detector engages DTX during a pause that still has
+    /// audible background noise (mean square well above the old fixed
+    /// -60 dBFS threshold), which the previous fixed detector would have called
+    /// active. The noise floor tracks the ambient level, so the pause reads as
+    /// inactive.
+    #[test]
+    fn dtx_engages_during_a_noisy_pause() {
+        let mut seed = 0x2468_1357u32;
+        let mut noise = move |amp: f32| {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            ((seed >> 9) as f32 / f32::from(u16::MAX) - 0.5) * amp
+        };
+        let mut enc = OpusEncoder::new(1);
+        enc.set_bandwidth(Bandwidth::WideBand);
+        enc.set_bitrate(Some(16_000));
+        enc.set_dtx(true);
+        let mut dec = OpusDecoder::new(1);
+
+        let mut dtx_packets = 0;
+        for f in 0..80 {
+            // 0..10: speech; 10..80: pause with ~-44 dBFS background noise
+            // (mean square ≈ 1.3e-5, far above the old 1e-6 fixed threshold).
+            let pcm: Vec<f32> = (0..960)
+                .map(|i| {
+                    if f < 10 {
+                        let t = (f * 960 + i) as f32 / 48_000.0;
+                        0.3 * (2.0 * core::f32::consts::PI * 300.0 * t).sin() + noise(0.02)
+                    } else {
+                        noise(0.012)
+                    }
+                })
+                .collect();
+            let packet = enc.encode_auto(&pcm, 1275).expect("encode");
+            if packet.len() == 1 {
+                dtx_packets += 1;
+            }
+            let out = dec.decode_packet(&packet).expect("decode");
+            assert!(out.iter().all(|v| v.is_finite()));
+        }
+        assert!(
+            dtx_packets >= 15,
+            "expected DTX during the noisy pause, got {dtx_packets}"
         );
     }
 

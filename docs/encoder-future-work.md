@@ -36,29 +36,22 @@ Differences from the reference (`silk_encode_frame_FLP`):
   (`(bands)*3 + 3`), tuned by hand on one speech clip. A rate-aware split
   would be better.
 
-## `encode_ogg_opus` pre-skip vs mode
-
-`pre_skip` is fixed at 120 (the CELT reconstruction delay), but hybrid/SILK
-have a smaller delay (~69 in libopus). So a hybrid/SILK file decodes ~51
-samples (~1 ms) misaligned in a *third-party* decoder (ffmpeg still reports
-0.97 correlation; our own decoder round-trips consistently because it uses the
-same pre_skip). To make cross-decoder alignment exact, set `pre_skip` from the
-mode `encode_auto` will pick for the chosen bitrate (≤ 40 kb/s fullband →
-hybrid → ~69; else CELT → 120), or flush the encoder delay explicitly. Note
-our decoder's measured hybrid delay (120) differs from libopus's (~69) - worth
-confirming our decoder's hybrid delay is conformant.
-
 ## DTX (`OpusEncoder::set_dtx`)
 
 Implemented: after 200 ms of inactivity `encode_auto` emits a 1-byte TOC-only
 packet (the decoder conceals it), with the libopus run bounds (≤ 400 ms, then
-a refresh frame). Caveat: activity is decided by a **simple energy threshold**
-(`frame_is_active`, ≈ -60 dBFS) rather than libopus's VAD/analysis activity
-probability - it catches genuine silence and very quiet gaps but not noisy
-speech pauses. Using the SILK VAD's `speech_activity_q8` (currently buried in
-`encode_frame`) would make DTX trigger on real low-activity content too.
+a refresh frame). Activity is an **adaptive energy detector** (`frame_active`)
+that tracks the background-noise floor, so DTX engages during noisy pauses, not
+just digital silence. It is still simpler than libopus's full SILK 4-band VAD
+/ analysis activity probability (`speech_activity_q8`, which would need a
+separate VAD+resampler at the `OpusEncoder` level since it runs at the internal
+rate) - fine for DTX gating, but the SILK VAD would be marginally more accurate.
 
 ## Other
+
+- `encode_ogg_opus` `pre_skip` is mode-aware (120 CELT / 69 hybrid) and
+  cross-decoder-aligned at zero lag; a stream that switches modes mid-file
+  would still use one fixed value.
 
 - The CELT-only path fills `max_bytes` (CBR) or shrinks to the VBR target;
   there is no constrained-VBR mode.
