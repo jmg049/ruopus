@@ -35,6 +35,11 @@ pub struct MdctLookup {
     n: usize,
     /// `trig[i] = cos(2*pi*i / n)` for `i in 0..=n/4` (float-build table).
     trig: Vec<f32>,
+    /// Forward pre-rotation twiddles per shift (0..=3), folded so the rotation
+    /// is a plain complex multiply `fc[i] = (re + i·im)·(wr[i] + i·wi[i])` with
+    /// sequential access - vectorisable without gather/reverse. Stored flat and
+    /// interleaved: `[wr0, wi0, wr1, wi1, …]`.
+    fwd_pre: [Vec<f32>; 4],
 }
 
 impl MdctLookup {
@@ -42,10 +47,29 @@ impl MdctLookup {
     #[must_use]
     pub fn new(n: usize) -> Self {
         let n4 = n >> 2;
-        let trig = (0..=n4)
+        let trig: Vec<f32> = (0..=n4)
             .map(|i| (2.0 * core::f64::consts::PI * i as f64 / n as f64).cos() as f32)
             .collect();
-        MdctLookup { n, trig }
+
+        // Pre-rotation twiddle for shift `s`: with `t1 = trig[i<<s]`,
+        // `t2 = trig[(n4s-i)<<s]`, `sine = 2π·0.125/(n>>s)`, the reference's
+        // `(yr + yi·sine, yi - yr·sine)` equals `(re + i·im)·(wr + i·wi)` with
+        // `wr = -t1 + t2·sine`, `wi = t1·sine + t2`.
+        let fwd_pre = core::array::from_fn(|s| {
+            let ns = n >> s;
+            let n4s = ns >> 2;
+            let sine = (2.0 * core::f64::consts::PI * 0.125 / ns as f64) as f32;
+            let mut v = Vec::with_capacity(2 * n4s);
+            for i in 0..n4s {
+                let t1 = trig[i << s];
+                let t2 = trig[(n4s - i) << s];
+                v.push(-t1 + t2 * sine);
+                v.push(t1 * sine + t2);
+            }
+            v
+        });
+
+        MdctLookup { n, trig, fwd_pre }
     }
 
     /// The family size `n`.
@@ -150,6 +174,59 @@ fn fft_forward(input: &[(f32, f32)], output: &mut [(f32, f32)]) {
             im += -f64::from(xr) * s + f64::from(xi) * c;
         }
         *out = ((re * scale) as f32, (im * scale) as f32);
+    }
+}
+
+/// Forward MDCT pre-rotation: `fc[i] = (f[2i] + i·f[2i+1]) · (tw[2i] + i·tw[2i+1])`.
+/// `tw` is the folded twiddle table (`fwd_pre`); output `fc` is sequential, so
+/// this vectorises as a deinterleave, complex multiply, and re-interleave.
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+fn prerotate(f: &[f32], tw: &[f32], fc: &mut [(f32, f32)]) {
+    use core::arch::x86_64::*;
+    let n4 = tw.len() / 2;
+    debug_assert!(f.len() >= 2 * n4 && fc.len() >= n4);
+    let fp = f.as_ptr();
+    let twp = tw.as_ptr();
+    // The output `(f32, f32)` pairs are written as two contiguous f32 (`cr`,
+    // `ci`); the MDCT round-trip test guards this layout assumption.
+    let fcp = fc.as_mut_ptr().cast::<f32>();
+    // SAFETY: SSE2 is the x86-64 baseline. Each iteration reads `f[2i..2i+8]`
+    // and `tw[2i..2i+8]` and writes `fc[2i..2i+8]` (as f32) with `i + 4 ≤ n4`,
+    // all within the asserted lengths; a scalar tail covers the remainder.
+    unsafe {
+        let mut i = 0;
+        while i + 4 <= n4 {
+            let lo = _mm_loadu_ps(fp.add(2 * i));
+            let hi = _mm_loadu_ps(fp.add(2 * i + 4));
+            let re = _mm_shuffle_ps::<0x88>(lo, hi);
+            let im = _mm_shuffle_ps::<0xDD>(lo, hi);
+            let twlo = _mm_loadu_ps(twp.add(2 * i));
+            let twhi = _mm_loadu_ps(twp.add(2 * i + 4));
+            let wr = _mm_shuffle_ps::<0x88>(twlo, twhi);
+            let wi = _mm_shuffle_ps::<0xDD>(twlo, twhi);
+            let cr = _mm_sub_ps(_mm_mul_ps(re, wr), _mm_mul_ps(im, wi));
+            let ci = _mm_add_ps(_mm_mul_ps(re, wi), _mm_mul_ps(im, wr));
+            _mm_storeu_ps(fcp.add(2 * i), _mm_unpacklo_ps(cr, ci));
+            _mm_storeu_ps(fcp.add(2 * i + 4), _mm_unpackhi_ps(cr, ci));
+            i += 4;
+        }
+        while i < n4 {
+            let (re, im) = (f[2 * i], f[2 * i + 1]);
+            let (wr, wi) = (tw[2 * i], tw[2 * i + 1]);
+            fc[i] = (re * wr - im * wi, re * wi + im * wr);
+            i += 1;
+        }
+    }
+}
+
+/// Scalar fallback off x86-64.
+#[cfg(not(target_arch = "x86_64"))]
+fn prerotate(f: &[f32], tw: &[f32], fc: &mut [(f32, f32)]) {
+    for (i, c) in fc.iter_mut().enumerate().take(tw.len() / 2) {
+        let (re, im) = (f[2 * i], f[2 * i + 1]);
+        let (wr, wi) = (tw[2 * i], tw[2 * i + 1]);
+        *c = (re * wr - im * wi, re * wi + im * wr);
     }
 }
 
@@ -315,19 +392,10 @@ impl MdctLookup {
             }
         }
 
-        // Pre-rotation.
+        // Pre-rotation (folded twiddle complex multiply - see `fwd_pre`).
         let mut fc = SCRATCH_C1.with(|s| core::mem::take(&mut *s.borrow_mut()));
         fc.resize(n4, (0.0, 0.0));
-        {
-            let t = &self.trig;
-            for (i, c) in fc.iter_mut().enumerate() {
-                let re = f[2 * i];
-                let im = f[2 * i + 1];
-                let yr = -re * t[i << shift] - im * t[(n4 - i) << shift];
-                let yi = -im * t[i << shift] + re * t[(n4 - i) << shift];
-                *c = (yr + yi * sine, yi - yr * sine);
-            }
-        }
+        prerotate(&f, &self.fwd_pre[shift], &mut fc);
 
         // N/4 complex FFT (downscales by 4/N).
         let mut f2 = SCRATCH_C2.with(|s| core::mem::take(&mut *s.borrow_mut()));
