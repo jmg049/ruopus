@@ -26,7 +26,6 @@
 //! every *bitstream-affecting* computation elsewhere in the crate remains
 //! bit-exact.
 
-use alloc::vec;
 use alloc::vec::Vec;
 
 /// Precomputed twiddles for one MDCT family (`mdct_lookup`): the standard
@@ -154,6 +153,15 @@ fn fft_forward(input: &[(f32, f32)], output: &mut [(f32, f32)]) {
     }
 }
 
+std::thread_local! {
+    /// Reused real scratch (`f`, the windowed/folded MDCT input).
+    static SCRATCH_F: core::cell::RefCell<Vec<f32>> = const { core::cell::RefCell::new(Vec::new()) };
+    /// Reused complex scratch buffers (`fc`/`f2`/`time`); fully overwritten
+    /// each transform, so no per-call allocation or zeroing is needed.
+    static SCRATCH_C1: core::cell::RefCell<Vec<(f32, f32)>> = const { core::cell::RefCell::new(Vec::new()) };
+    static SCRATCH_C2: core::cell::RefCell<Vec<(f32, f32)>> = const { core::cell::RefCell::new(Vec::new()) };
+}
+
 impl MdctLookup {
     /// The backward (synthesis) MDCT (`clt_mdct_backward`).
     ///
@@ -181,7 +189,8 @@ impl MdctLookup {
         let sine = (2.0 * core::f64::consts::PI * 0.125 / n as f64) as f32;
 
         // Pre-rotate the strided spectral coefficients into N/4 complex bins.
-        let mut f2 = vec![(0.0f32, 0.0f32); n4];
+        let mut f2 = SCRATCH_C1.with(|s| core::mem::take(&mut *s.borrow_mut()));
+        f2.resize(n4, (0.0, 0.0));
         {
             let t = &self.trig;
             for (i, y) in f2.iter_mut().enumerate() {
@@ -195,12 +204,15 @@ impl MdctLookup {
         }
 
         // Inverse N/4 complex FFT (un-normalised) into the output buffer.
-        let mut time = vec![(0.0f32, 0.0f32); n4];
+        let mut time = SCRATCH_C2.with(|s| core::mem::take(&mut *s.borrow_mut()));
+        time.resize(n4, (0.0, 0.0));
         fft_inverse(&f2, &mut time);
         for (i, &(re, im)) in time.iter().enumerate() {
             out[(overlap >> 1) + 2 * i] = re;
             out[(overlap >> 1) + 2 * i + 1] = im;
         }
+        SCRATCH_C1.with(|s| *s.borrow_mut() = f2);
+        SCRATCH_C2.with(|s| *s.borrow_mut() = time);
 
         // Post-rotate and de-shuffle from both ends at once, in place.
         {
@@ -266,7 +278,8 @@ impl MdctLookup {
         let sine = (2.0 * core::f64::consts::PI * 0.125 / n as f64) as f32;
 
         // Window, shuffle, fold the four conceptual blocks [a, b, c, d].
-        let mut f = vec![0.0f32; n2];
+        let mut f = SCRATCH_F.with(|s| core::mem::take(&mut *s.borrow_mut()));
+        f.resize(n2, 0.0);
         {
             let half = overlap >> 1;
             let quarter = (overlap + 3) >> 2;
@@ -303,7 +316,8 @@ impl MdctLookup {
         }
 
         // Pre-rotation.
-        let mut fc = vec![(0.0f32, 0.0f32); n4];
+        let mut fc = SCRATCH_C1.with(|s| core::mem::take(&mut *s.borrow_mut()));
+        fc.resize(n4, (0.0, 0.0));
         {
             let t = &self.trig;
             for (i, c) in fc.iter_mut().enumerate() {
@@ -316,7 +330,8 @@ impl MdctLookup {
         }
 
         // N/4 complex FFT (downscales by 4/N).
-        let mut f2 = vec![(0.0f32, 0.0f32); n4];
+        let mut f2 = SCRATCH_C2.with(|s| core::mem::take(&mut *s.borrow_mut()));
+        f2.resize(n4, (0.0, 0.0));
         fft_forward(&fc, &mut f2);
 
         // Post-rotate and interleave to the strided output.
@@ -329,6 +344,10 @@ impl MdctLookup {
                 out[stride * (n2 - 1 - 2 * i)] = yi + yr * sine;
             }
         }
+
+        SCRATCH_F.with(|s| *s.borrow_mut() = f);
+        SCRATCH_C1.with(|s| *s.borrow_mut() = fc);
+        SCRATCH_C2.with(|s| *s.borrow_mut() = f2);
     }
 }
 
