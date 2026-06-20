@@ -52,6 +52,73 @@ pub(crate) fn dual_dot(x: &[f32], y1: &[f32], y2: &[f32]) -> (f32, f32) {
     }
 }
 
+/// 6-tap FIR: `out[j] = Σ_{k=0..6} inp[j+k]·c[k]` for `j` in `0..out.len()`.
+/// `inp` must be at least `out.len() + 5` long. Used by the CELT pitch
+/// downsampler's whitening filter (`celt_fir5`, expressed with an explicit
+/// 5-sample input history so it is a forward convolution).
+#[cfg_attr(target_arch = "x86_64", allow(unsafe_code))]
+pub(crate) fn fir6(out: &mut [f32], inp: &[f32], c: [f32; 6]) {
+    debug_assert!(inp.len() >= out.len() + 5);
+    #[cfg(target_arch = "x86_64")]
+    {
+        if has_avx2() {
+            // SAFETY: AVX2 gated by runtime detection; the kernel reads
+            // `inp[j..j+8+5]` only where `j + 8 ≤ out.len()` and writes
+            // `out[j..j+8]`, with a scalar tail - all in bounds given the
+            // `inp.len() ≥ out.len()+5` precondition.
+            unsafe { fir6_avx2(out, inp, c) };
+            return;
+        }
+    }
+    for (j, o) in out.iter_mut().enumerate() {
+        *o = c[0] * inp[j]
+            + c[1] * inp[j + 1]
+            + c[2] * inp[j + 2]
+            + c[3] * inp[j + 3]
+            + c[4] * inp[j + 4]
+            + c[5] * inp[j + 5];
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn fir6_avx2(out: &mut [f32], inp: &[f32], c: [f32; 6]) {
+    use core::arch::x86_64::*;
+    let n = out.len();
+    let (ip, op) = (inp.as_ptr(), out.as_mut_ptr());
+    // SAFETY: 8-wide loads read `inp[j..j+13]` (j+8+5 ≤ n+5 ≤ inp.len()); stores
+    // write `out[j..j+8]`; the scalar tail covers the remainder.
+    unsafe {
+        let c0 = _mm256_set1_ps(c[0]);
+        let c1 = _mm256_set1_ps(c[1]);
+        let c2 = _mm256_set1_ps(c[2]);
+        let c3 = _mm256_set1_ps(c[3]);
+        let c4 = _mm256_set1_ps(c[4]);
+        let c5 = _mm256_set1_ps(c[5]);
+        let mut j = 0;
+        while j + 8 <= n {
+            let mut acc = _mm256_mul_ps(_mm256_loadu_ps(ip.add(j)), c0);
+            acc = _mm256_fmadd_ps(_mm256_loadu_ps(ip.add(j + 1)), c1, acc);
+            acc = _mm256_fmadd_ps(_mm256_loadu_ps(ip.add(j + 2)), c2, acc);
+            acc = _mm256_fmadd_ps(_mm256_loadu_ps(ip.add(j + 3)), c3, acc);
+            acc = _mm256_fmadd_ps(_mm256_loadu_ps(ip.add(j + 4)), c4, acc);
+            acc = _mm256_fmadd_ps(_mm256_loadu_ps(ip.add(j + 5)), c5, acc);
+            _mm256_storeu_ps(op.add(j), acc);
+            j += 8;
+        }
+        while j < n {
+            *op.add(j) = c[0] * *ip.add(j)
+                + c[1] * *ip.add(j + 1)
+                + c[2] * *ip.add(j + 2)
+                + c[3] * *ip.add(j + 3)
+                + c[4] * *ip.add(j + 4)
+                + c[5] * *ip.add(j + 5);
+            j += 1;
+        }
+    }
+}
+
 /// `out[i] = (x[i]·scale).round().clamp(-32768, 32767) as i16`, matching
 /// `f32::round` (round half away from zero) bit-for-bit. Used for the SILK
 /// float→i16 conversions (pitch analysis frames, encoder input), which feed

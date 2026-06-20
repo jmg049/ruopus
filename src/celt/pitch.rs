@@ -80,19 +80,19 @@ fn find_best_pitch(xcorr: &[f32], y: &[f32], len: usize, max_pitch: usize) -> [u
 }
 
 /// In-place 5-tap FIR (`celt_fir5`), used by the downsampler's whitening.
+///
+/// `out[i] = x[i] + Σ_k num[k]·x[i-1-k]` (zero history before the start). The
+/// filter is non-recursive, so with the input copied behind a 5-sample zero
+/// history it is a forward 6-tap convolution the SIMD kernel handles. The
+/// result feeds the pitch search (an encoder decision), so FMA rounding is fine.
 fn celt_fir5(x: &mut [f32], num: &[f32; 5]) {
-    let (n0, n1, n2, n3, n4) = (num[0], num[1], num[2], num[3], num[4]);
-    let (mut m0, mut m1, mut m2, mut m3, mut m4) = (0.0f32, 0.0, 0.0, 0.0, 0.0);
-    for v in x.iter_mut() {
-        let xi = *v;
-        let sum = xi + n0 * m0 + n1 * m1 + n2 * m2 + n3 * m3 + n4 * m4;
-        m4 = m3;
-        m3 = m2;
-        m2 = m1;
-        m1 = m0;
-        m0 = xi;
-        *v = sum;
-    }
+    let n = x.len();
+    let mut inp = vec![0.0f32; n + 5];
+    inp[5..].copy_from_slice(x);
+    // Coefficients ordered for the forward convolution: oldest tap first, then
+    // the identity term for x[i] itself.
+    let c = [num[4], num[3], num[2], num[1], num[0], 1.0];
+    crate::simd::fir6(x, &inp, c);
 }
 
 /// Autocorrelation `ac[k] = Σ_{i≥k} x[i]·x[i-k]` for `k = 0..=lag`
@@ -101,11 +101,8 @@ fn autocorr(x: &[f32], lag: usize) -> Vec<f32> {
     let n = x.len();
     let mut ac = vec![0.0f32; lag + 1];
     for (k, a) in ac.iter_mut().enumerate() {
-        let mut d = 0.0f32;
-        for i in k..n {
-            d += x[i] * x[i - k];
-        }
-        *a = d;
+        // ac[k] = Σ_j x[j]·x[j+k] over j in 0..n-k.
+        *a = crate::simd::dot(&x[..n - k], &x[k..]);
     }
     ac
 }
