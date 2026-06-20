@@ -435,7 +435,8 @@ impl OpusEncoder {
             }
             let (silk, resampler, _, _) = self.silk.as_mut().expect("configured");
             silk.set_bitrate(bitrate.clamp(5000, 80_000));
-            let in16: Vec<i16> = pcm.iter().map(|&v| to_i16(v)).collect();
+            let mut in16 = vec![0i16; pcm.len()];
+            crate::simd::scale_round_to_i16(&mut in16, pcm, 32768.0);
             let out_len = per_ch * internal_khz as usize / 48;
             let mut internal = vec![0i16; out_len];
             resampler.process(&mut internal, &in16);

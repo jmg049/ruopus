@@ -50,9 +50,25 @@ fn bench(label: &str, ch: usize, bw: Bandwidth, br: u32, frames: usize) {
 }
 
 fn main() {
+    // Frame count per mode; reduce for callgrind/valgrind via OPUS_BENCH_FRAMES.
+    // A single mode can be selected with OPUS_BENCH_MODE=silk|hybrid|celt.
+    let f: usize = std::env::var("OPUS_BENCH_FRAMES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(20_000);
+    let mode = std::env::var("OPUS_BENCH_MODE").unwrap_or_default();
+    let want = |m: &str| mode.is_empty() || mode == m;
     println!("encoder throughput (release):");
-    bench("SILK WB 16k mono", 1, Bandwidth::WideBand, 16_000, 20_000);
-    bench("hybrid FB 32k mono", 1, Bandwidth::FullBand, 32_000, 20_000);
-    bench("CELT FB 96k mono", 1, Bandwidth::FullBand, 96_000, 20_000);
-    bench("hybrid FB 48k stereo", 2, Bandwidth::FullBand, 48_000, 20_000);
+    if want("silk") {
+        bench("SILK WB 16k mono", 1, Bandwidth::WideBand, 16_000, f);
+    }
+    if want("hybrid") {
+        bench("hybrid FB 32k mono", 1, Bandwidth::FullBand, 32_000, f);
+    }
+    if want("celt") {
+        bench("CELT FB 96k mono", 1, Bandwidth::FullBand, 96_000, f);
+    }
+    if want("hybrid") {
+        bench("hybrid FB 48k stereo", 2, Bandwidth::FullBand, 48_000, f);
+    }
 }

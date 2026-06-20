@@ -16,12 +16,12 @@ const FIND_LPC_COND_FAC: f64 = 1e-5;
 
 /// Sum of squares (`silk_energy_FLP`), accumulated in `f64`.
 fn energy(x: &[f32]) -> f64 {
-    x.iter().map(|&v| f64::from(v) * f64::from(v)).sum()
+    crate::simd::dot_f64(x, x)
 }
 
 /// Dot product `Σ a[i]·b[i]` (`silk_inner_product_FLP`), accumulated in `f64`.
 fn inner_product(a: &[f32], b: &[f32], n: usize) -> f64 {
-    (0..n).map(|i| f64::from(a[i]) * f64::from(b[i])).sum()
+    crate::simd::dot_f64(&a[..n], b)
 }
 
 /// Burg's method, modified (`silk_burg_modified_FLP`).

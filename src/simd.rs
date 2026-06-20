@@ -52,6 +52,63 @@ pub(crate) fn dual_dot(x: &[f32], y1: &[f32], y2: &[f32]) -> (f32, f32) {
     }
 }
 
+/// `out[i] = (x[i]·scale).round().clamp(-32768, 32767) as i16`, matching
+/// `f32::round` (round half away from zero) bit-for-bit. Used for the SILK
+/// float→i16 conversions (pitch analysis frames, encoder input), which feed
+/// reference-pinned analysis, so the rounding must match exactly.
+#[cfg_attr(target_arch = "x86_64", allow(unsafe_code))]
+pub(crate) fn scale_round_to_i16(out: &mut [i16], x: &[f32], scale: f32) {
+    debug_assert!(out.len() == x.len());
+    #[cfg(target_arch = "x86_64")]
+    {
+        if has_avx2() {
+            // SAFETY: AVX2 gated by runtime detection; lengths are equal and
+            // the kernel processes 8-wide with a scalar tail, so all accesses
+            // are in bounds.
+            unsafe { scale_round_to_i16_avx2(out, x, scale) };
+            return;
+        }
+    }
+    for (o, &v) in out.iter_mut().zip(x.iter()) {
+        *o = (v * scale).round().clamp(-32768.0, 32767.0) as i16;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+#[target_feature(enable = "avx2")]
+unsafe fn scale_round_to_i16_avx2(out: &mut [i16], x: &[f32], scale: f32) {
+    use core::arch::x86_64::*;
+    let n = x.len();
+    let (xp, op) = (x.as_ptr(), out.as_mut_ptr());
+    // SAFETY: 8-wide loads/stores start at `i` with `i + 8 ≤ n`; the scalar
+    // tail handles the remainder. Round-half-away is `trunc(v + copysign(0.5,v))`.
+    unsafe {
+        let vscale = _mm256_set1_ps(scale);
+        let half = _mm256_set1_ps(0.5);
+        let signmask = _mm256_set1_ps(-0.0);
+        let lo = _mm256_set1_ps(-32768.0);
+        let hi = _mm256_set1_ps(32767.0);
+        let mut i = 0;
+        while i + 8 <= n {
+            let v = _mm256_mul_ps(_mm256_loadu_ps(xp.add(i)), vscale);
+            let bias = _mm256_or_ps(_mm256_and_ps(v, signmask), half);
+            let r = _mm256_round_ps::<{ _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC }>(_mm256_add_ps(v, bias));
+            let r = _mm256_max_ps(lo, _mm256_min_ps(hi, r));
+            // f32 -> i32 (truncation; already integral), then saturating pack to i16.
+            let i32s = _mm256_cvttps_epi32(r);
+            // Pack the two 128-bit halves of i32 lanes into one 128-bit of i16.
+            let packed = _mm_packs_epi32(_mm256_castsi256_si128(i32s), _mm256_extracti128_si256::<1>(i32s));
+            _mm_storeu_si128(op.add(i).cast(), packed);
+            i += 8;
+        }
+        while i < n {
+            *op.add(i) = (*xp.add(i) * scale).round().clamp(-32768.0, 32767.0) as i16;
+            i += 1;
+        }
+    }
+}
+
 #[inline]
 #[cfg_attr(target_arch = "x86_64", allow(dead_code))]
 fn dot_scalar(x: &[f32], y: &[f32]) -> f32 {

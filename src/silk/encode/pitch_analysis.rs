@@ -70,9 +70,8 @@ fn xcorr(x: &[f32], y: &[f32], out: &mut [f32], len: usize, max: usize) {
 
 /// `silk_float2short_array`: round-to-nearest with saturation to i16.
 fn float2short(out: &mut [i16], x: &[f32]) {
-    for (o, &v) in out.iter_mut().zip(x) {
-        *o = v.round().clamp(-32768.0, 32767.0) as i16;
-    }
+    let n = out.len().min(x.len());
+    crate::simd::scale_round_to_i16(&mut out[..n], &x[..n], 1.0);
 }
 
 /// `silk_insertion_sort_decreasing_FLP`: sort the largest `k` of `a`
