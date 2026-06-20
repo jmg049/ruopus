@@ -103,14 +103,16 @@ libopus's default (what callers usually get):
 
 | Mode | `opus_native` | libopus c0 | libopus c10 (default) |
 |------|---------------|------------|-----------------------|
-| SILK wideband 16 kb/s | **565×** | 735× | 218× |
-| hybrid fullband 32 kb/s | **347×** | 555× | 192× |
-| CELT fullband 64 kb/s | **671×** | 1090× | 430× |
+| SILK wideband 16 kb/s | **635×** | 720× | 216× |
+| hybrid fullband 32 kb/s | **386×** | 550× | 191× |
+| CELT fullband 64 kb/s | **662×** | 1080× | 430× |
 
 `opus_native` encodes **faster than libopus at its default complexity on every
-mode** (1.5-2.6×), and reaches 0.61-0.78× of libopus's matched complexity-0
+mode** (1.5-2.9×), and reaches 0.61-0.89× of libopus's matched complexity-0
 speed - up from ~0.3-0.5× - after SIMD (AVX2+FMA / SSE2) of the encoder's hot
-loops:
+loops plus general tuning (latency-hiding in the dot kernels; reverting SIMD
+where a scalar loop was actually faster - measured in cycles, not instruction
+counts):
 
 - **CELT**: the PVQ pulse search (SSE2 *and* an AVX2 path libopus doesn't ship);
   the pre-filter pitch analysis (`celt_pitch_xcorr` + downsampler whitening,
