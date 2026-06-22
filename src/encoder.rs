@@ -141,6 +141,12 @@ pub struct OpusEncoder {
     /// bitrate is a VBR target; when `false` the CELT path codes constant
     /// bitrate - a fixed byte count per frame at the target rate.
     vbr: bool,
+    /// Forced coded channel count (`OPUS_SET_FORCE_CHANNELS`). `None` (the
+    /// default, `OPUS_AUTO`) codes the configured channel count. `Some(1)` on a
+    /// stereo encoder downmixes the stereo input to mono and codes a mono
+    /// packet; forcing 2 on a mono encoder has no effect (mono can only ever
+    /// code mono). Only the 2→1 downmix changes behaviour.
+    force_channels: Option<usize>,
 }
 
 impl OpusEncoder {
@@ -167,6 +173,7 @@ impl OpusEncoder {
             dtx_noise_floor: 1.0,
             complexity: 10,
             vbr: true,
+            force_channels: None,
         }
     }
 
@@ -176,7 +183,7 @@ impl OpusEncoder {
     /// filter memory, the DTX activity run and the range oracle), so the next
     /// packet is coded as if it were the first.
     pub fn reset(&mut self) {
-        self.celt = CeltEncoder::with_channels(self.channels);
+        self.celt = CeltEncoder::with_channels(self.coded_channels());
         self.celt.set_complexity(self.complexity);
         self.celt.set_target_bitrate(self.target_bitrate);
         self.silk = None;
@@ -194,6 +201,75 @@ impl OpusEncoder {
     #[must_use]
     pub const fn channels(&self) -> usize {
         self.channels
+    }
+
+    /// The number of channels actually coded into the packet. Equals
+    /// [`channels`](Self::channels) unless `force_channels` requests fewer (a
+    /// stereo encoder forced to mono codes 1), which is the only direction that
+    /// changes behaviour - mono can never code stereo.
+    #[must_use]
+    const fn coded_channels(&self) -> usize {
+        match self.force_channels {
+            Some(fc) if fc < self.channels => fc,
+            _ => self.channels,
+        }
+    }
+
+    /// Forces the coded channel count (`OPUS_SET_FORCE_CHANNELS`). `None`
+    /// (`OPUS_AUTO`, the default) codes the configured channels. `Some(1)` on a
+    /// stereo encoder downmixes the stereo input to mono and codes mono packets
+    /// (a mono TOC); the configured channel count and the input layout are
+    /// unchanged - only the coded packet becomes mono. `Some(2)` on a mono
+    /// encoder is a no-op (mono can only code mono). Switching the coded count
+    /// rebuilds the CELT coder and drops the lazily-built SILK encoders, so the
+    /// next packet is coded fresh for the new channel count.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `Some(n)` with `n` not 1 or 2.
+    pub fn set_force_channels(&mut self, force: Option<usize>) {
+        if let Some(n) = force {
+            assert!(n == 1 || n == 2, "force_channels must be 1 or 2");
+        }
+        let before = self.coded_channels();
+        self.force_channels = force;
+        let after = self.coded_channels();
+        if after != before {
+            // The coded channel count changed: rebuild the CELT coder for it and
+            // drop the SILK encoders (they are keyed off the coded channels and
+            // built lazily on the next encode).
+            self.celt = CeltEncoder::with_channels(after);
+            self.celt.set_complexity(self.complexity);
+            self.celt.set_target_bitrate(self.target_bitrate);
+            self.silk = None;
+            self.silk_stereo = None;
+        }
+    }
+
+    /// The forced coded channel count, or `None` for automatic
+    /// (`OPUS_GET_FORCE_CHANNELS`).
+    #[must_use]
+    pub const fn force_channels(&self) -> Option<usize> {
+        self.force_channels
+    }
+
+    /// High-pass-filters the interleaved input (keyed off the configured
+    /// channels) and returns it laid out for the **coded** channel count: when
+    /// forcing a stereo input to mono this averages the two channels into a
+    /// single mono stream (matching libopus's `(l + r) * 0.5` downmix). The DC
+    /// reject runs on the original channels first so its per-channel filter
+    /// memory stays continuous.
+    fn prepare_input(&mut self, pcm: &[f32]) -> Vec<f32> {
+        let filtered = self.dc_reject(pcm);
+        if self.coded_channels() == self.channels {
+            return filtered;
+        }
+        // Only 2 -> 1 downmix reaches here (coded < configured, both in 1..=2).
+        debug_assert_eq!((self.channels, self.coded_channels()), (2, 1));
+        filtered
+            .chunks_exact(2)
+            .map(|lr| (lr[0] + lr[1]) * 0.5)
+            .collect()
     }
 
     /// The encode complexity 0-10 (`OPUS_GET_COMPLEXITY`).
@@ -412,6 +488,23 @@ impl OpusEncoder {
         self.last_final_range
     }
 
+    /// The encoder's algorithmic delay in samples at 48 kHz
+    /// (`OPUS_GET_LOOKAHEAD`) - the number of leading output samples the decoder
+    /// should skip (`pre_skip`) to align its output with the input.
+    ///
+    /// The default mode is fullband CELT, whose delay is the MDCT overlap
+    /// ([`crate::celt`] codes a 120-sample window at 48 kHz). This is not a
+    /// fabricated constant: encoding a unit impulse and locating it in the
+    /// decoded output puts the peak exactly 120 samples late (see the
+    /// `lookahead_matches_measured_impulse_delay` test), matching the
+    /// `pre_skip = 120` that [`encode_ogg_opus`] writes for the CELT path and
+    /// libopus's own fullband CELT lookahead.
+    #[must_use]
+    pub const fn lookahead(&self) -> u32 {
+        // CELT MDCT overlap at 48 kHz; the default (and highest-delay) mode.
+        120
+    }
+
     /// Encodes one frame of interleaved 48 kHz f32 PCM in `[-1, 1]` into an
     /// Opus packet of at most `max_bytes` bytes (including the TOC).
     ///
@@ -445,9 +538,10 @@ impl OpusEncoder {
             Bandwidth::FullBand => (28, 21),
         };
         let config = config_base + lm;
-        let toc = (config << 3) | (u8::from(self.channels == 2) << 2);
+        let toc = (config << 3) | (u8::from(self.coded_channels() == 2) << 2);
 
-        let pcm = self.dc_reject(pcm);
+        // High-pass and (when forcing mono) downmix to the coded layout.
+        let pcm = self.prepare_input(pcm);
         let payload = if let Some(br) = self.target_bitrate
             && !self.vbr
         {
@@ -512,10 +606,11 @@ impl OpusEncoder {
         let nb_subfr = if frame_ms == 10 { 2 } else { 4 };
         let bitrate = self.target_bitrate.map_or(20_000, |b| b as i32);
 
-        let pcm = self.dc_reject(pcm);
+        // High-pass and (when forcing mono) downmix to the coded layout.
+        let pcm = self.prepare_input(pcm);
         let pcm = pcm.as_slice();
 
-        let payload = if self.channels == 1 {
+        let payload = if self.coded_channels() == 1 {
             let need_new = self
                 .silk
                 .as_ref()
@@ -570,7 +665,7 @@ impl OpusEncoder {
         }
 
         let config = config_base + lm;
-        let toc = (config << 3) | (u8::from(self.channels == 2) << 2); // code 0
+        let toc = (config << 3) | (u8::from(self.coded_channels() == 2) << 2); // code 0
         let mut packet = Vec::with_capacity(payload.len() + 1);
         packet.push(toc);
         packet.extend_from_slice(&payload);
@@ -619,15 +714,17 @@ impl OpusEncoder {
         let target = self.target_bitrate.map_or(32_000, |b| b as i32);
         let nb_bytes = ((target * frame_ms as i32 / 8000) as usize).clamp(20, max_bytes);
         let swb = matches!(self.bandwidth, Bandwidth::SuperWideBand);
-        let silk_bps = compute_silk_rate_for_hybrid(target, swb, self.channels as i32);
+        let coded_ch = self.coded_channels();
+        let silk_bps = compute_silk_rate_for_hybrid(target, swb, coded_ch as i32);
         let celt_floor = (celt_end - 17) * 3 + 3;
         let silk_cap = nb_bytes.saturating_sub(celt_floor).max(8);
 
-        let pcm = self.dc_reject(pcm);
+        // High-pass and (when forcing mono) downmix to the coded layout.
+        let pcm = self.prepare_input(pcm);
         let pcm = pcm.as_slice();
 
         let mut enc = RangeEncoder::new(nb_bytes);
-        if self.channels == 1 {
+        if coded_ch == 1 {
             // SILK low band: WB (16 kHz) resample, then write into the coder,
             // capped so the CELT high band keeps at least `celt_floor` bytes.
             let need_new = self
@@ -691,7 +788,7 @@ impl OpusEncoder {
         let payload = enc.finalize().map_err(|_| EncodeError::InvalidBudget)?;
 
         let config = config_base + lm;
-        let toc = (config << 3) | (u8::from(self.channels == 2) << 2); // code 0
+        let toc = (config << 3) | (u8::from(self.coded_channels() == 2) << 2); // code 0
         let mut packet = Vec::with_capacity(payload.len() + 1);
         packet.push(toc);
         packet.extend_from_slice(&payload);
@@ -1548,4 +1645,205 @@ mod tests {
         assert_eq!(enc.encode(&[0.0; 960], 2), Err(EncodeError::InvalidBudget));
         assert_eq!(enc.encode(&[0.0; 960], 2000), Err(EncodeError::InvalidBudget));
     }
+
+    /// `OPUS_GET_LOOKAHEAD`: `lookahead()` reports the encoder's true
+    /// algorithmic delay. Encoding a unit impulse (CELT, the default mode) and
+    /// locating its peak in the decoded output puts it exactly `lookahead()`
+    /// samples late - the number is measured, not asserted by fiat - and it
+    /// equals the `pre_skip` the Ogg writer emits for the CELT path.
+    #[test]
+    fn lookahead_matches_measured_impulse_delay() {
+        let mut enc = OpusEncoder::new(1);
+        enc.set_bitrate(Some(96_000)); // CELT, fullband
+        assert_eq!(enc.lookahead(), 120, "documented fullband CELT delay");
+
+        let mut dec = OpusDecoder::new(1);
+        let in_pos = 240usize; // impulse position within the first frame
+        let mut out_all: Vec<f32> = Vec::new();
+        for f in 0..6 {
+            let mut frame = alloc::vec![0.0f32; 960];
+            if f == 0 {
+                frame[in_pos] = 0.9;
+            }
+            let packet = enc.encode(&frame, 1275).expect("encode");
+            out_all.extend_from_slice(&dec.decode_packet(&packet).expect("decode"));
+        }
+        let peak_idx = out_all
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.abs().partial_cmp(&b.1.abs()).unwrap())
+            .map(|(i, _)| i)
+            .unwrap();
+        let measured_delay = peak_idx as i64 - in_pos as i64;
+        assert_eq!(
+            measured_delay,
+            i64::from(enc.lookahead()),
+            "impulse arrives {measured_delay} samples late; lookahead() says {}",
+            enc.lookahead()
+        );
+    }
+
+    /// `OPUS_SET_FORCE_CHANNELS` getter/setter round-trips, only the 2→1
+    /// direction takes effect, and bad values are rejected.
+    #[test]
+    fn force_channels_getter_setter() {
+        let mut stereo = OpusEncoder::new(2);
+        assert_eq!(stereo.force_channels(), None);
+        stereo.set_force_channels(Some(1));
+        assert_eq!(stereo.force_channels(), Some(1));
+        stereo.set_force_channels(None);
+        assert_eq!(stereo.force_channels(), None);
+
+        // Forcing stereo on a mono encoder is a no-op for the coded count.
+        let mut mono = OpusEncoder::new(1);
+        mono.set_force_channels(Some(2));
+        assert_eq!(mono.force_channels(), Some(2));
+        // It still only ever codes mono (verified by the round-trip test below).
+    }
+
+    #[test]
+    #[should_panic(expected = "force_channels must be 1 or 2")]
+    fn force_channels_rejects_out_of_range() {
+        OpusEncoder::new(2).set_force_channels(Some(3));
+    }
+
+    /// `OPUS_SET_FORCE_CHANNELS = 1` on a stereo encoder downmixes the stereo
+    /// input to mono and codes **mono** packets (mono TOC, stereo bit clear),
+    /// which decode through a **mono** `OpusDecoder` with the matching final
+    /// range - the bit-exact oracle. Covers CELT, SILK and hybrid, and the
+    /// downmix is real: a hard-panned input (left only) decodes to roughly half
+    /// amplitude (the `(l + r) / 2` average), not full scale.
+    #[test]
+    fn force_channels_downmix_round_trips_as_mono() {
+        // Build a decorrelated stereo frame: left tone, right a different tone.
+        let stereo_frame = |spf: usize, f: usize| -> Vec<f32> {
+            let mut pcm = Vec::with_capacity(spf * 2);
+            for i in 0..spf {
+                let t = (f * spf + i) as f32 / 48_000.0;
+                let l = 0.4 * (2.0 * core::f32::consts::PI * 300.0 * t).sin();
+                let r = 0.4 * (2.0 * core::f32::consts::PI * 480.0 * t).sin();
+                pcm.push(l);
+                pcm.push(r);
+            }
+            pcm
+        };
+
+        // (label, spf, bandwidth, bitrate, encode fn)
+        type Enc = fn(&mut OpusEncoder, &[f32], usize) -> Result<Vec<u8>, EncodeError>;
+        let cases: [(&str, usize, Bandwidth, u32, Enc); 3] = [
+            ("celt", 960, Bandwidth::FullBand, 96_000, OpusEncoder::encode),
+            ("silk", 960, Bandwidth::WideBand, 24_000, OpusEncoder::encode_silk),
+            ("hybrid", 960, Bandwidth::FullBand, 32_000, OpusEncoder::encode_hybrid),
+        ];
+
+        for (label, spf, bw, rate, encfn) in cases {
+            let mut enc = OpusEncoder::new(2);
+            enc.set_bandwidth(bw);
+            enc.set_bitrate(Some(rate));
+            enc.set_force_channels(Some(1));
+            assert_eq!(enc.channels(), 2, "configured stays stereo");
+
+            let mut dec = OpusDecoder::new(1); // a MONO decoder
+            for f in 0..6 {
+                let pcm = stereo_frame(spf, f);
+                let packet = encfn(&mut enc, &pcm, 1275).expect("forced-mono encode");
+                // Mono TOC: stereo bit (bit 2) must be clear.
+                assert_eq!(packet[0] & 0b100, 0, "{label}: packet must be mono");
+                let out = dec.decode_packet(&packet).expect("mono decode");
+                assert_eq!(out.len(), spf, "{label}: mono output length");
+                assert_eq!(
+                    dec.final_range(),
+                    enc.final_range(),
+                    "{label}: forced-mono range mismatch frame {f}"
+                );
+            }
+        }
+    }
+
+    /// The downmix is the genuine `(l + r) / 2` average, not a channel pick: a
+    /// hard-left-panned stereo input (right silent) forced to mono reconstructs
+    /// at roughly half the single-channel amplitude.
+    #[test]
+    fn force_channels_downmix_halves_a_panned_input() {
+        let spf = 960usize;
+        let mut enc = OpusEncoder::new(2);
+        enc.set_bandwidth(Bandwidth::WideBand);
+        enc.set_bitrate(Some(32_000));
+        enc.set_force_channels(Some(1));
+        let mut dec = OpusDecoder::new(1);
+
+        // Reference: the same tone fed to a true mono encoder.
+        let mut ref_enc = OpusEncoder::new(1);
+        ref_enc.set_bandwidth(Bandwidth::WideBand);
+        ref_enc.set_bitrate(Some(32_000));
+        let mut ref_dec = OpusDecoder::new(1);
+
+        let (mut downmix_rms, mut ref_rms) = (0.0f64, 0.0f64);
+        for f in 0..8 {
+            let mut stereo = Vec::with_capacity(spf * 2);
+            let mut mono = Vec::with_capacity(spf);
+            for i in 0..spf {
+                let t = (f * spf + i) as f32 / 48_000.0;
+                let s = 0.6 * (2.0 * core::f32::consts::PI * 300.0 * t).sin();
+                stereo.push(s); // left
+                stereo.push(0.0); // right silent (hard left pan)
+                mono.push(s);
+            }
+            let dpkt = enc.encode_silk(&stereo, 1275).expect("downmix encode");
+            let dout = dec.decode_packet(&dpkt).expect("decode");
+            let rpkt = ref_enc.encode_silk(&mono, 1275).expect("ref encode");
+            let rout = ref_dec.decode_packet(&rpkt).expect("decode");
+            if f >= 4 {
+                downmix_rms += dout.iter().map(|&v| f64::from(v) * f64::from(v)).sum::<f64>();
+                ref_rms += rout.iter().map(|&v| f64::from(v) * f64::from(v)).sum::<f64>();
+            }
+        }
+        let ratio = (downmix_rms / ref_rms).sqrt();
+        // Left-only panned -> (l + 0)/2 = l/2, so ~0.5 of the full-mono level.
+        assert!(
+            (0.35..0.65).contains(&ratio),
+            "downmix amplitude ratio {ratio:.3} not ~0.5 (mean-of-channels)"
+        );
+    }
+
+    /// Toggling `force_channels` rebuilds the coder so the stream stays
+    /// bit-exact: after switching a stereo encoder to forced-mono and back, the
+    /// configured-stereo packets still decode through a stereo `OpusDecoder`
+    /// with the matching range.
+    #[test]
+    fn force_channels_toggle_keeps_the_oracle() {
+        let mut enc = OpusEncoder::new(2);
+        enc.set_bandwidth(Bandwidth::FullBand);
+        enc.set_bitrate(Some(96_000));
+        let stereo_frame = |f: usize| -> Vec<f32> {
+            let mut pcm = Vec::with_capacity(960 * 2);
+            for i in 0..960 {
+                let t = (f * 960 + i) as f32 / 48_000.0;
+                pcm.push(0.4 * (2.0 * core::f32::consts::PI * 300.0 * t).sin());
+                pcm.push(0.4 * (2.0 * core::f32::consts::PI * 480.0 * t).sin());
+            }
+            pcm
+        };
+
+        // Forced mono for a couple of frames (mono decoder).
+        enc.set_force_channels(Some(1));
+        let mut mdec = OpusDecoder::new(1);
+        for f in 0..3 {
+            let p = enc.encode(&stereo_frame(f), 1275).unwrap();
+            assert_eq!(p[0] & 0b100, 0);
+            assert_eq!(mdec.decode_packet(&p).unwrap().len(), 960);
+            assert_eq!(mdec.final_range(), enc.final_range(), "mono phase frame {f}");
+        }
+
+        // Switch back to stereo coding; a fresh stereo decoder tracks it.
+        enc.set_force_channels(None);
+        let mut sdec = OpusDecoder::new(2);
+        for f in 3..6 {
+            let p = enc.encode(&stereo_frame(f), 1275).unwrap();
+            assert_eq!(p[0] & 0b100, 0b100, "stereo bit set after switch back");
+            assert_eq!(sdec.decode_packet(&p).unwrap().len(), 960 * 2);
+            assert_eq!(sdec.final_range(), enc.final_range(), "stereo phase frame {f}");
+        }
+    }
 }
+

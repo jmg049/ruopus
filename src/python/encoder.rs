@@ -46,6 +46,7 @@ pub struct OpusEncoder {
     dtx: bool,
     bandwidth: Bandwidth,
     vbr: bool,
+    force_channels: Option<usize>,
 }
 
 impl OpusEncoder {
@@ -83,6 +84,7 @@ impl OpusEncoder {
             dtx,
             bandwidth,
             vbr: true,
+            force_channels: None,
         })
     }
 
@@ -155,6 +157,47 @@ impl OpusEncoder {
     fn set_bandwidth(&mut self, bandwidth: Bandwidth) {
         self.inner.set_bandwidth(bandwidth.into());
         self.bandwidth = bandwidth;
+    }
+
+    /// Force the coded channel count (``OPUS_SET_FORCE_CHANNELS``).
+    ///
+    /// ``None`` (``OPUS_AUTO``, the default) codes the configured channels.
+    /// ``1`` on a stereo encoder downmixes the stereo input to mono (the
+    /// ``(l + r) / 2`` average) and codes mono packets; the configured channel
+    /// count and the input layout are unchanged. ``2`` on a mono encoder is a
+    /// no-op. Switching the coded count rebuilds the coders.
+    ///
+    /// Raises
+    /// ------
+    /// ValueError
+    ///     If set to a value other than ``None``, 1, or 2.
+    #[getter]
+    fn get_force_channels(&self) -> Option<usize> {
+        self.force_channels
+    }
+
+    #[setter]
+    fn set_force_channels(&mut self, force: Option<usize>) -> PyResult<()> {
+        if let Some(n) = force
+            && n != 1
+            && n != 2
+        {
+            return Err(PyValueError::new_err("force_channels must be None, 1, or 2"));
+        }
+        self.inner.set_force_channels(force);
+        self.force_channels = force;
+        Ok(())
+    }
+
+    /// The encoder's algorithmic delay in samples at 48 kHz
+    /// (``OPUS_GET_LOOKAHEAD``).
+    ///
+    /// The number of leading output samples to skip (``pre_skip``) to align the
+    /// decoded output with the input. 120 for the default fullband CELT mode
+    /// (the MDCT overlap), measured from a unit-impulse round trip.
+    #[getter]
+    fn lookahead(&self) -> u32 {
+        self.inner.lookahead()
     }
 
     /// The range coder state after the last packet (``OPUS_GET_FINAL_RANGE``).
