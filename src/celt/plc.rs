@@ -8,15 +8,15 @@
 
 use alloc::vec;
 
-/// `CELT_LPC_ORDER`.
+/// Order of the CELT short-term LPC predictor.
 pub(crate) const CELT_LPC_ORDER: usize = 24;
-/// `MAX_PERIOD`.
+/// Length of the synthesis history kept for concealment.
 pub(crate) const MAX_PERIOD: usize = 1024;
-/// `PLC_PITCH_LAG_MAX` / `_MIN`: 480 Hz .. 66.6 Hz.
+/// PLC pitch lag bounds: 480 Hz .. 66.6 Hz.
 pub(crate) const PLC_PITCH_LAG_MAX: usize = 720;
 pub(crate) const PLC_PITCH_LAG_MIN: usize = 100;
 
-/// `celt_pitch_xcorr`: `xcorr[i] = Σ_j x[j]·y[j+i]`.
+/// Cross-correlation `xcorr[i] = Σ_j x[j]·y[j+i]`.
 fn pitch_xcorr(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, max_pitch: usize) {
     for (i, out) in xcorr.iter_mut().enumerate().take(max_pitch) {
         let mut sum = 0.0f32;
@@ -27,7 +27,7 @@ fn pitch_xcorr(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, max_pitch: u
     }
 }
 
-/// `_celt_autocorr` (float build).
+/// Windowed autocorrelation of `x` up to `lag` (float build).
 pub(crate) fn celt_autocorr(x: &[f32], ac: &mut [f32], window: &[f32], overlap: usize, lag: usize) {
     let n = x.len();
     let fast_n = n - lag;
@@ -47,7 +47,7 @@ pub(crate) fn celt_autocorr(x: &[f32], ac: &mut [f32], window: &[f32], overlap: 
     }
 }
 
-/// `_celt_lpc`: Levinson-Durbin (float build), bailing at 30 dB gain.
+/// Levinson-Durbin recursion (float build), bailing at 30 dB gain.
 pub(crate) fn celt_lpc(lpc: &mut [f32], ac: &[f32]) {
     let p = lpc.len();
     lpc.fill(0.0);
@@ -76,7 +76,7 @@ pub(crate) fn celt_lpc(lpc: &mut [f32], ac: &[f32]) {
     }
 }
 
-/// `celt_fir`: analysis filter. `input` carries `num.len()` history samples
+/// Analysis filter. `input` carries `num.len()` history samples
 /// followed by `out.len()` signal samples.
 pub(crate) fn celt_fir(input: &[f32], num: &[f32], out: &mut [f32]) {
     let ord = num.len();
@@ -90,7 +90,7 @@ pub(crate) fn celt_fir(input: &[f32], num: &[f32], out: &mut [f32]) {
     }
 }
 
-/// `celt_iir`: synthesis filter in place, with rolling memory `mem`
+/// Synthesis filter in place, with rolling memory `mem`
 /// (`mem[0]` is the most recent output).
 pub(crate) fn celt_iir(x: &mut [f32], den: &[f32], mem: &mut [f32]) {
     let ord = den.len();
@@ -107,7 +107,7 @@ pub(crate) fn celt_iir(x: &mut [f32], den: &[f32], mem: &mut [f32]) {
     }
 }
 
-/// `celt_fir5`: fixed 5-tap analysis filter used by the pitch downsampler.
+/// Fixed 5-tap analysis filter used by the pitch downsampler.
 fn celt_fir5(x: &mut [f32], num: &[f32; 5]) {
     let mut mem = [0.0f32; 5];
     for v in x.iter_mut() {
@@ -121,8 +121,8 @@ fn celt_fir5(x: &mut [f32], num: &[f32; 5]) {
     }
 }
 
-/// `pitch_downsample`: 2× downsample with channel mixdown, then whiten
-/// with a 4th-order LPC (plus a zero).
+/// 2× downsample with channel mixdown, then whiten with a 4th-order LPC
+/// (plus a zero).
 pub(crate) fn pitch_downsample(x: &[&[f32]], x_lp: &mut [f32], len: usize) {
     for i in 1..len >> 1 {
         x_lp[i] = 0.25 * x[0][2 * i - 1] + 0.25 * x[0][2 * i + 1] + 0.5 * x[0][2 * i];
@@ -163,7 +163,7 @@ pub(crate) fn pitch_downsample(x: &[&[f32]], x_lp: &mut [f32], len: usize) {
     celt_fir5(&mut x_lp[..len >> 1], &lpc2);
 }
 
-/// `find_best_pitch`: the two best normalised-correlation candidates.
+/// The two best normalised-correlation candidates.
 fn find_best_pitch(xcorr: &[f32], y: &[f32], len: usize, max_pitch: usize) -> [usize; 2] {
     let mut best_num = [-1.0f32; 2];
     let mut best_den = [0.0f32; 2];
@@ -197,8 +197,8 @@ fn find_best_pitch(xcorr: &[f32], y: &[f32], len: usize, max_pitch: usize) -> [u
     best_pitch
 }
 
-/// `pitch_search`: coarse 4× search, refined 2× search, then
-/// pseudo-interpolation. `y` is `x_lp` extended `max_pitch` samples into
+/// Coarse 4× search, refined 2× search, then pseudo-interpolation.
+/// `y` is `x_lp` extended `max_pitch` samples into
 /// the past (i.e. `x_lp = &y[max_pitch>>1..]` in the PLC caller).
 pub(crate) fn pitch_search(x_lp: &[f32], y: &[f32], len: usize, max_pitch: usize) -> usize {
     let lag = len + max_pitch;

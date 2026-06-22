@@ -21,7 +21,7 @@ const LAMBDA_INPUT_QUALITY: f32 = -0.1;
 const LAMBDA_CODING_QUALITY: f32 = -0.2;
 const LAMBDA_QUANT_OFFSET: f32 = 0.8;
 
-/// `silk_sigmoid`.
+/// Logistic sigmoid `1 / (1 + e^-x)`.
 fn sigmoid(x: f32) -> f32 {
     1.0 / (1.0 + (-x).exp())
 }
@@ -41,7 +41,7 @@ pub(crate) struct GainsResult {
     pub quant_offset_type: i32,
 }
 
-/// `silk_process_gains_FLP`: limit and quantise the gains and derive the RD
+/// Limit and quantise the gains and derive the RD
 /// lambda. `gains` are the raw per-subframe gains (linear); `res_nrg` the
 /// per-subframe residual energies. `last_gain_index` is the cross-frame
 /// accumulator (`sShape.LastGainIndex`), updated in place.

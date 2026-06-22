@@ -25,7 +25,7 @@ const MAX_AMP_EXT: i32 = 10;
 /// Level adjustment `NLSF_QUANT_LEVEL_ADJ` in Q10.
 const LEVEL_ADJ_Q10: i32 = 102; // round(0.1 * 1024)
 
-/// `silk_MLA`: `a + b·c` (32-bit, wrapping).
+/// `a + b·c` (32-bit, wrapping).
 #[inline]
 const fn mla(a: i32, b: i32, c: i32) -> i32 {
     a.wrapping_add(b.wrapping_mul(c))
@@ -38,7 +38,7 @@ const MAX_ITERATIONS: i32 = 16;
 /// Cos-table size (`LSF_COS_TAB_SZ_FIX`).
 const LSF_COS_TAB_SZ: i32 = 128;
 
-/// `silk_A2NLSF_trans_poly`: cos(n·f) basis → cos(f)^n basis.
+/// Transform a polynomial from the cos(n·f) basis to the cos(f)^n basis.
 fn trans_poly(p: &mut [i32], dd: usize) {
     for k in 2..=dd {
         for n in (k + 1..=dd).rev() {
@@ -48,7 +48,7 @@ fn trans_poly(p: &mut [i32], dd: usize) {
     }
 }
 
-/// `silk_A2NLSF_eval_poly`: evaluate `p` at Q12 point `x`, result Q16.
+/// Evaluate `p` at Q12 point `x`, result Q16.
 fn eval_poly(p: &[i32], x: i32, dd: usize) -> i32 {
     let x_q16 = x << 4;
     let mut y32 = p[dd];
@@ -58,7 +58,7 @@ fn eval_poly(p: &[i32], x: i32, dd: usize) -> i32 {
     y32
 }
 
-/// `silk_A2NLSF_init`: build the even (`P`) and odd (`Q`) polynomials from
+/// Build the even (`P`) and odd (`Q`) polynomials from
 /// the Q16 whitening coefficients, dividing out the fixed z = ±1 roots and
 /// transforming to the cos(f)^n basis.
 fn init(a_q16: &[i32], p: &mut [i32], q: &mut [i32], dd: usize) {
@@ -76,7 +76,7 @@ fn init(a_q16: &[i32], p: &mut [i32], q: &mut [i32], dd: usize) {
     trans_poly(q, dd);
 }
 
-/// `silk_A2NLSF`: NLSFs (Q15) from monic whitening-filter coefficients (Q16,
+/// NLSFs (Q15) from monic whitening-filter coefficients (Q16,
 /// modified in place by bandwidth expansion on non-convergence). `d` even.
 fn a2nlsf_fix(nlsf: &mut [i16], a_q16: &mut [i32], d: usize) {
     let dd = d >> 1;
@@ -187,7 +187,7 @@ pub(crate) fn a2nlsf(lpc: &[f32]) -> Vec<i16> {
     nlsf
 }
 
-/// `silk_NLSF_VQ_weights_laroia`: perceptual NLSF weights (Q2) from the
+/// Perceptual NLSF weights (Q2) from the
 /// inverse spacing between adjacent line spectral frequencies.
 pub(crate) fn nlsf_vq_weights_laroia(w_q2: &mut [i16], nlsf_q15: &[i16], d: usize) {
     // 1 << (15 + NLSF_W_Q), NLSF_W_Q = 2.
@@ -207,7 +207,7 @@ pub(crate) fn nlsf_vq_weights_laroia(w_q2: &mut [i16], nlsf_q15: &[i16], d: usiz
     w_q2[d - 1] = (tmp1 + tmp2).min(i32::from(i16::MAX)) as i16;
 }
 
-/// `silk_NLSF_VQ`: weighted predictive quantisation error of each first-
+/// Weighted predictive quantisation error of each first-
 /// stage codebook vector against `in_q15`.
 fn nlsf_vq(err_q24: &mut [i32], in_q15: &[i16], cb_q8: &[u8], wght_q9: &[i16], k: usize, order: usize) {
     for i in 0..k {
@@ -230,7 +230,7 @@ fn nlsf_vq(err_q24: &mut [i32], in_q15: &[i16], cb_q8: &[u8], wght_q9: &[i16], k
     }
 }
 
-/// `silk_insertion_sort_increasing`: sort so the first `k` of `a` are the
+/// Sort so the first `k` of `a` are the
 /// `k` smallest in increasing order, tracking original indices in `idx`.
 fn insertion_sort_increasing(a: &mut [i32], idx: &mut [usize], l: usize, k: usize) {
     for (i, ix) in idx.iter_mut().enumerate().take(k) {
@@ -262,7 +262,7 @@ fn insertion_sort_increasing(a: &mut [i32], idx: &mut [usize], l: usize, k: usiz
     }
 }
 
-/// `silk_NLSF_del_dec_quant`: delayed-decision (trellis) quantiser of the
+/// Delayed-decision (trellis) quantiser of the
 /// first-stage residual. Fills `indices` (length `order`) and returns the
 /// rate-distortion value in Q25.
 #[allow(clippy::too_many_arguments, reason = "mirrors the reference signature")]
@@ -422,7 +422,7 @@ fn nlsf_del_dec_quant(
     min_q25
 }
 
-/// `silk_NLSF_encode`: stabilise, run the first-stage VQ, refine the best
+/// Stabilise, run the first-stage VQ, refine the best
 /// survivors with the trellis quantiser, pick the lowest rate-distortion
 /// path, and decode it back into `nlsf_q15`. Returns the chosen path
 /// `indices` (length `order + 1`) and the RD value (Q25).

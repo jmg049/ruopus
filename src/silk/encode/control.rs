@@ -7,7 +7,7 @@
 //! and scaled by 21 into Q7); the first ~4 kb/s of entries are all zero and
 //! omitted from the tables.
 
-/// `silk_TargetRate_NB_21` (8 kHz internal).
+/// Target-rate-to-SNR table for the 8 kHz internal rate (Q7, scaled by 21).
 const TARGET_RATE_NB_21: [u8; 107] = [
     0, 15, 39, 52, 61, 68, 74, 79, 84, 88, 92, 95, 99, 102, 105, 108, 111, 114, 117, 119, 122, 124, 126, 129, 131, 133,
     135, 137, 139, 142, 143, 145, 147, 149, 151, 153, 155, 157, 158, 160, 162, 163, 165, 167, 168, 170, 171, 173, 174,
@@ -16,7 +16,7 @@ const TARGET_RATE_NB_21: [u8; 107] = [
     239, 241, 242, 243, 245, 246, 248, 249, 250, 252, 253, 255,
 ];
 
-/// `silk_TargetRate_MB_21` (12 kHz internal).
+/// Target-rate-to-SNR table for the 12 kHz internal rate (Q7, scaled by 21).
 const TARGET_RATE_MB_21: [u8; 155] = [
     0, 0, 28, 43, 52, 59, 65, 70, 74, 78, 81, 85, 87, 90, 93, 95, 98, 100, 102, 105, 107, 109, 111, 113, 115, 116, 118,
     120, 122, 123, 125, 127, 128, 130, 131, 133, 134, 136, 137, 138, 140, 141, 143, 144, 145, 147, 148, 149, 151, 152,
@@ -27,7 +27,7 @@ const TARGET_RATE_MB_21: [u8; 155] = [
     243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255,
 ];
 
-/// `silk_TargetRate_WB_21` (16 kHz internal).
+/// Target-rate-to-SNR table for the 16 kHz internal rate (Q7, scaled by 21).
 const TARGET_RATE_WB_21: [u8; 191] = [
     0, 0, 0, 8, 29, 41, 49, 56, 62, 66, 70, 74, 77, 80, 83, 86, 88, 91, 93, 95, 97, 99, 101, 103, 105, 107, 108, 110,
     112, 113, 115, 116, 118, 119, 121, 122, 123, 125, 126, 127, 129, 130, 131, 132, 134, 135, 136, 137, 138, 140, 141,
@@ -40,8 +40,8 @@ const TARGET_RATE_WB_21: [u8; 191] = [
     253, 255,
 ];
 
-/// `silk_control_SNR`: the coding SNR in Q7 for `target_rate_bps` at the
-/// given internal rate and subframe count.
+/// The coding SNR in Q7 for `target_rate_bps` at the given internal rate and
+/// subframe count.
 #[must_use]
 pub(crate) fn control_snr(fs_khz: i32, nb_subfr: usize, target_rate_bps: i32) -> i32 {
     let mut target = target_rate_bps;

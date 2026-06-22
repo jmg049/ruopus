@@ -526,7 +526,7 @@ impl CeltDecoder {
         pcm
     }
 
-    /// `celt_decode_lost`: conceals one lost frame of `frame_size` samples
+    /// Conceals one lost frame of `frame_size` samples
     /// per channel, returning interleaved PCM like
     /// [`decode_frame`](Self::decode_frame).
     ///
@@ -758,7 +758,7 @@ impl CeltDecoder {
         pcm
     }
 
-    /// `celt_synthesis`: denormalises the band shapes against the energy
+    /// Denormalises the band shapes against the energy
     /// state, converts stream to decoder channels, and runs the inverse
     /// MDCTs into the (already shifted) history ring.
     #[allow(clippy::too_many_arguments, reason = "mirrors the reference synthesis sequence")]

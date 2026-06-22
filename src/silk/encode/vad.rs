@@ -27,7 +27,7 @@ const VAD_NOISE_LEVEL_SMOOTH_COEF_Q16: i32 = 1024;
 const A_FB1_20: i32 = 5394 << 1;
 const A_FB1_21: i32 = -24290;
 
-/// `silk_sigm_Q15`: piecewise-linear sigmoid, input Q5, output Q15.
+/// Piecewise-linear sigmoid, input Q5, output Q15.
 fn sigm_q15(in_q5: i32) -> i32 {
     const SLOPE_Q10: [i32; 6] = [237, 153, 73, 30, 12, 7];
     const POS_Q15: [i32; 6] = [16384, 23955, 28861, 31213, 32178, 32548];
@@ -48,12 +48,12 @@ fn sigm_q15(in_q5: i32) -> i32 {
     }
 }
 
-/// `silk_ADD_POS_SAT32`: saturating add of two non-negative values.
+/// Saturating add of two non-negative values.
 fn add_pos_sat32(a: i32, b: i32) -> i32 {
     a.saturating_add(b)
 }
 
-/// `silk_ana_filt_bank_1`: split `input` (length `n`) into a low band and a
+/// Split `input` (length `n`) into a low band and a
 /// high band (each `n/2`) via a first-order allpass pair. `s` is the
 /// 2-element filter state, carried across frames.
 fn ana_filt_bank_1(input: &[i16], s: &mut [i32; 2], n: usize) -> (alloc::vec::Vec<i16>, alloc::vec::Vec<i16>) {
@@ -79,12 +79,12 @@ fn ana_filt_bank_1(input: &[i16], s: &mut [i32; 2], n: usize) -> (alloc::vec::Ve
     (out_l, out_h)
 }
 
-/// `silk_SAT16`.
+/// Saturate to i16.
 fn sat16(a: i32) -> i16 {
     a.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
 }
 
-/// `silk_RSHIFT_ROUND`.
+/// Arithmetic right shift with rounding.
 fn rshift_round(a: i32, shift: u32) -> i32 {
     (a + (1 << (shift - 1))) >> shift
 }
@@ -142,7 +142,7 @@ impl VadState {
         }
     }
 
-    /// `silk_VAD_GetNoiseLevels`: update the per-band noise-floor estimate
+    /// Update the per-band noise-floor estimate
     /// from the current subband energies.
     #[allow(
         clippy::needless_range_loop,
@@ -174,7 +174,7 @@ impl VadState {
         }
     }
 
-    /// `silk_VAD_GetSA_Q8_c`: compute the speech activity, tilt and per-band
+    /// Compute the speech activity, tilt and per-band
     /// quality for one frame of `pin` (`frame_length` samples at `fs_khz`).
     #[allow(clippy::needless_range_loop, reason = "computed index ranges mirror the reference")]
     pub(crate) fn get_sa_q8(&mut self, pin: &[i16], frame_length: usize, fs_khz: i32) -> VadResult {

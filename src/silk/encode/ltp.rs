@@ -25,7 +25,7 @@ const MAX_SUM_LOG_GAIN_DB: f32 = 250.0;
 const LTP_CORR_INV_MAX: f32 = 0.03;
 const NB_LTP_CBKS: usize = 3;
 
-/// `silk_LTP_gain_BITS_Q5_{0,1,2}`: per-vector code length (Q5 bits).
+/// Per-vector code length (Q5 bits) for each LTP gain codebook.
 const LTP_GAIN_BITS_Q5_0: [u8; 8] = [15, 131, 138, 138, 155, 155, 173, 173];
 const LTP_GAIN_BITS_Q5_1: [u8; 16] = [
     69, 93, 115, 118, 131, 138, 141, 138, 150, 150, 155, 150, 155, 160, 166, 160,
@@ -45,17 +45,17 @@ fn codebook(per: usize) -> (&'static [[i8; LTP_ORDER]], &'static [u8], &'static 
     }
 }
 
-/// `silk_energy_FLP`: sum of squares in double precision.
+/// Sum of squares in double precision.
 fn energy(x: &[f32]) -> f64 {
     x.iter().map(|&v| f64::from(v) * f64::from(v)).sum()
 }
 
-/// `silk_inner_product_FLP`.
+/// Inner product of the first `len` elements of `a` and `b`, in double precision.
 fn inner_product(a: &[f32], b: &[f32], len: usize) -> f64 {
     (0..len).map(|i| f64::from(a[i]) * f64::from(b[i])).sum()
 }
 
-/// `silk_corrMatrix_FLP`: the symmetric `Order×Order` correlation matrix of
+/// The symmetric `Order×Order` correlation matrix of
 /// the columns of the lagged data `x` (`x` has `L + Order - 1` samples;
 /// index 0 is the oldest). Written row-major into `xx`.
 fn corr_matrix(x: &[f32], l: usize, order: usize, xx: &mut [f32]) {
@@ -81,7 +81,7 @@ fn corr_matrix(x: &[f32], l: usize, order: usize, xx: &mut [f32]) {
     }
 }
 
-/// `silk_corrVector_FLP`: `X'·t` for the lagged data `x` (`Order` taps).
+/// `X'·t` for the lagged data `x` (`Order` taps).
 fn corr_vector(x: &[f32], t: &[f32], l: usize, order: usize, xt: &mut [f32]) {
     for (lag, out) in xt.iter_mut().enumerate().take(order) {
         // ptr1 starts at x[order-1] and walks back one column per lag.
@@ -89,7 +89,7 @@ fn corr_vector(x: &[f32], t: &[f32], l: usize, order: usize, xt: &mut [f32]) {
     }
 }
 
-/// `silk_find_LTP_FLP`: per-subframe weighted correlation matrix `XX`
+/// Per-subframe weighted correlation matrix `XX`
 /// (`nb_subfr * 25`) and vector `xX` (`nb_subfr * 5`) for the LPC residual
 /// `r` and pitch `lag`s. `r` is indexed so each subframe `k` starts at
 /// `r_base + k*subfr_length`; enough history precedes `r_base` to reach
@@ -121,12 +121,12 @@ pub(crate) fn find_ltp(
     }
 }
 
-/// `silk_float2int`: round to nearest integer.
+/// Round to nearest integer.
 fn float2int(x: f32) -> i32 {
     x.round() as i32
 }
 
-/// `silk_VQ_WMat_EC_c`: search the codebook `cb_q7` (with effective gains
+/// Search the codebook `cb_q7` (with effective gains
 /// `cb_gain_q7` and code lengths `cl_q5`) for the vector minimising the
 /// weighted quantisation error plus rate, subject to a maximum effective
 /// gain. Returns `(index, res_nrg_q15, rate_dist_q8, gain_q7)`.
@@ -212,7 +212,7 @@ pub(crate) struct LtpGains {
     pub pred_gain_db: f32,
 }
 
-/// `silk_quant_LTP_gains` (via the float wrapper): convert the float
+/// Convert the float
 /// correlations to Q17, search the three periodicity codebooks, and pick the
 /// one minimising total rate-distortion. `sum_log_gain_q7` is the cumulative
 /// max-gain accumulator, updated in place.

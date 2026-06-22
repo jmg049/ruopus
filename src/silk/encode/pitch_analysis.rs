@@ -15,12 +15,12 @@ use super::super::tables::{CB_LAGS_STAGE2, CB_LAGS_STAGE2_10_MS, CB_LAGS_STAGE3,
 use super::dsp::{apply_sine_window, autocorrelation, bwexpander, k2a, lpc_analysis_filter_flp, schur};
 use super::resample::down2;
 
-/// `LA_PITCH_MS`.
+/// Pitch-analysis lookahead, in milliseconds.
 const LA_PITCH_MS: usize = 2;
-/// `FIND_PITCH_WHITE_NOISE_FRACTION` / `FIND_PITCH_BANDWIDTH_EXPANSION`.
+/// White-noise floor and bandwidth-expansion factors for the whitening LPC.
 const FIND_PITCH_WHITE_NOISE_FRACTION: f32 = 1e-3;
 const FIND_PITCH_BANDWIDTH_EXPANSION: f32 = 0.99;
-/// `FIND_PITCH_LPC_WIN_MS` (4-subframe) / `_2_SF` (2-subframe), in ms.
+/// Whitening-LPC analysis window length (4-subframe) / `_2_SF` (2-subframe), in ms.
 const FIND_PITCH_LPC_WIN_MS: usize = 24;
 const FIND_PITCH_LPC_WIN_MS_2_SF: usize = 14;
 
@@ -41,15 +41,16 @@ const PE_PREVLAG_BIAS: f32 = 0.2;
 const PE_FLATCONTOUR_BIAS: f32 = 0.05;
 const C_STRIDE: usize = (PE_MAX_LAG >> 1) + 5;
 
-/// `silk_Lag_range_stage3` - `[complexity][subframe][lo, hi]`.
+/// Stage-3 lag search range, indexed `[complexity][subframe][lo, hi]`.
 const LAG_RANGE_STAGE3: [[[i8; 2]; 4]; 3] = [
     [[-5, 8], [-1, 6], [-1, 6], [-4, 10]],
     [[-6, 10], [-2, 6], [-1, 6], [-5, 10]],
     [[-9, 12], [-3, 7], [-2, 7], [-7, 13]],
 ];
-/// `silk_Lag_range_stage3_10_ms`.
+/// Stage-3 lag search range for 10 ms (2-subframe) frames.
 const LAG_RANGE_STAGE3_10MS: [[i8; 2]; 2] = [[-3, 7], [-2, 7]];
-/// `silk_nb_cbk_searchs_stage3` (`PE_NB_CBKS_STAGE3_{MIN,MID,MAX}`).
+/// Number of stage-3 codebook vectors searched per complexity level
+/// (`PE_NB_CBKS_STAGE3_{MIN,MID,MAX}`).
 const NB_CBK_SEARCHS_STAGE3: [usize; 3] = [16, 24, 34];
 
 fn energy(x: &[f32]) -> f64 {
@@ -60,20 +61,20 @@ fn inner(a: &[f32], b: &[f32], n: usize) -> f64 {
     crate::simd::dot_f64(&a[..n], b)
 }
 
-/// `celt_pitch_xcorr`: `out[i] = <x, y[i..]>` for `i` in `0..max`.
+/// Cross-correlation: `out[i] = <x, y[i..]>` for `i` in `0..max`.
 fn xcorr(x: &[f32], y: &[f32], out: &mut [f32], len: usize, max: usize) {
     for (i, o) in out.iter_mut().enumerate().take(max) {
         *o = inner(x, &y[i..], len) as f32;
     }
 }
 
-/// `silk_float2short_array`: round-to-nearest with saturation to i16.
+/// Round-to-nearest with saturation to i16.
 fn float2short(out: &mut [i16], x: &[f32]) {
     let n = out.len().min(x.len());
     crate::simd::scale_round_to_i16(&mut out[..n], &x[..n], 1.0);
 }
 
-/// `silk_insertion_sort_decreasing_FLP`: sort the largest `k` of `a`
+/// Sort the largest `k` of `a`
 /// descending, recording their original indices in `idx`.
 fn insertion_sort_decreasing(a: &mut [f32], idx: &mut [usize], l: usize, k: usize) {
     for (i, id) in idx.iter_mut().enumerate().take(k) {
@@ -105,7 +106,7 @@ fn insertion_sort_decreasing(a: &mut [f32], idx: &mut [usize], l: usize, k: usiz
     }
 }
 
-/// `silk_pitch_analysis_core_FLP`. `frame` is the whitened residual of
+/// Core pitch (lag) search. `frame` is the whitened residual of
 /// length `(20 + nb_subfr*5) * fs_khz`. Returns
 /// `(voicing, pitch_out, lag_index, contour_index)` where `voicing` is 0 for
 /// voiced and 1 for unvoiced; `ltp_corr` is updated with the normalised
@@ -422,7 +423,7 @@ pub(crate) fn pitch_analysis_core(
 
 type St3 = alloc::vec::Vec<[[f32; PE_NB_STAGE3_LAGS]; PE_NB_CBKS_STAGE3_MAX]>;
 
-/// `silk_P_Ana_calc_corr_st3`: stage-3 cross-correlations per subframe,
+/// Stage-3 cross-correlations per subframe,
 /// codebook vector and lag offset.
 #[allow(clippy::needless_range_loop, reason = "computed index ranges mirror the reference")]
 fn calc_corr_st3(frame: &[f32], start_lag: i32, sf_length: usize, nb_subfr: usize, complexity: usize) -> St3 {
@@ -458,7 +459,7 @@ fn calc_corr_st3(frame: &[f32], start_lag: i32, sf_length: usize, nb_subfr: usiz
     out
 }
 
-/// `silk_P_Ana_calc_energy_st3`: stage-3 energies (recursive sliding window).
+/// Stage-3 energies (recursive sliding window).
 #[allow(clippy::needless_range_loop, reason = "computed index ranges mirror the reference")]
 fn calc_energy_st3(frame: &[f32], start_lag: i32, sf_length: usize, nb_subfr: usize, complexity: usize) -> St3 {
     let mut out: St3 = vec![[[0.0; PE_NB_STAGE3_LAGS]; PE_NB_CBKS_STAGE3_MAX]; nb_subfr];
@@ -518,7 +519,7 @@ pub(crate) struct PitchLagsResult {
     pub pred_gain: f32,
 }
 
-/// `silk_find_pitch_lags_FLP`: whiten the input with a short-term LPC, then
+/// Whiten the input with a short-term LPC, then
 /// run [`pitch_analysis_core`] on the residual. `x_buf` is the input with
 /// `ltp_mem_length` of history before the frame and `la_pitch` of lookahead
 /// after it (length `la_pitch + frame_length + ltp_mem_length`); `res`

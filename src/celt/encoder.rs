@@ -1390,7 +1390,7 @@ fn dynalloc_analysis(
     }
 }
 
-/// `celt_exp2` (float build): the reference's polynomial 2^x approximation,
+/// Polynomial 2^x approximation (float build),
 /// reproduced so `importance` matches the reference bit-for-bit-ish.
 #[allow(clippy::excessive_precision, reason = "verbatim reference polynomial constants")]
 fn celt_exp2(x: f32) -> f32 {

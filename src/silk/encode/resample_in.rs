@@ -19,15 +19,15 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-/// `silk_Resampler_1_3_COEFS` (48→16): 2 AR2 taps then 18 symmetric FIR taps.
+/// 48→16 resampler coefficients: 2 AR2 taps then 18 symmetric FIR taps.
 const COEFS_1_3: [i16; 20] = [
     16102, -15162, -13, 0, 20, 26, 5, -31, -43, -4, 65, 90, 7, -157, -248, -44, 593, 1583, 2612, 3271,
 ];
-/// `silk_Resampler_1_4_COEFS` (48→12).
+/// 48→12 resampler coefficients: 2 AR2 taps then 18 symmetric FIR taps.
 const COEFS_1_4: [i16; 20] = [
     22500, -15099, 3, -14, -20, -15, 2, 25, 37, 25, -16, -71, -107, -79, 50, 292, 623, 982, 1288, 1464,
 ];
-/// `silk_Resampler_1_6_COEFS` (48→8).
+/// 48→8 resampler coefficients: 2 AR2 taps then 18 symmetric FIR taps.
 const COEFS_1_6: [i16; 20] = [
     27540, -15257, 17, 12, 8, 1, -10, -22, -30, -32, -22, 3, 44, 100, 168, 243, 317, 381, 429, 455,
 ];
@@ -123,8 +123,8 @@ impl EncDownsampler {
         self.delay_buf[..self.input_delay].copy_from_slice(&input[in_len - self.input_delay..]);
     }
 
-    /// `silk_resampler_private_down_FIR` (float): AR2 pre-filter then symmetric
-    /// FIR decimation. `out.len() == input.len() / decim`.
+    /// AR2 pre-filter then symmetric
+    /// FIR decimation (float). `out.len() == input.len() / decim`.
     fn down_fir(&mut self, out: &mut [i16], input: &[f32]) {
         let n = input.len();
         // Work buffer: ORD history samples then the AR2-filtered input.

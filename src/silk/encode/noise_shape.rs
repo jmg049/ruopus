@@ -92,17 +92,17 @@ pub(crate) struct NoiseShapeResult {
     pub coding_quality: f32,
 }
 
-/// `silk_sigmoid`.
+/// Logistic sigmoid `1 / (1 + e^-x)`.
 fn sigmoid(x: f32) -> f32 {
     1.0 / (1.0 + (-x).exp())
 }
 
-/// `silk_float2int`: round to nearest integer.
+/// Round to nearest integer.
 fn float2int(x: f32) -> i32 {
     x.round() as i32
 }
 
-/// `silk_warped_autocorrelation_FLP`: warped autocorrelation through a chain
+/// Warped autocorrelation through a chain
 /// of first-order allpass sections (warping coefficient `warping`).
 fn warped_autocorrelation(corr: &mut [f32], input: &[f32], warping: f32, order: usize) {
     debug_assert!(order & 1 == 0);
@@ -201,7 +201,7 @@ fn warped_true2monic_coefs(coefs: &mut [f32], lambda: f32, limit: f32, order: us
     }
 }
 
-/// `silk_noise_shape_analysis_FLP`. `x_buf` holds `la_shape` samples of
+/// Derive the per-subframe noise-shaping parameters. `x_buf` holds `la_shape` samples of
 /// history, then the `frame_length` frame, then `la_shape` samples of
 /// lookahead (length `frame_length + 2*la_shape`); the frame starts at
 /// index `la_shape`. `pitch_res` is the pitch-analysis residual over the

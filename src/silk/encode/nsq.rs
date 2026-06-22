@@ -33,13 +33,13 @@ const MAX_FRAME_LENGTH: usize = 320;
 const RAND_MULTIPLIER: i32 = 196_314_165;
 const RAND_INCREMENT: i32 = 907_633_515;
 
-/// `silk_SAT16`.
+/// Saturate to i16.
 #[inline]
 fn sat16(a: i32) -> i16 {
     a.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
 }
 
-/// `silk_RAND`.
+/// Linear-congruential pseudo-random step from `seed`.
 #[inline]
 fn rand(seed: i32) -> i32 {
     RAND_INCREMENT.wrapping_add(seed.wrapping_mul(RAND_MULTIPLIER))
@@ -108,7 +108,7 @@ pub(crate) struct NsqConfig {
     pub shaping_lpc_order: usize,
 }
 
-/// `silk_noise_shape_quantizer_short_prediction`: the LPC prediction (Q10).
+/// The LPC prediction (Q10).
 ///
 /// `coef_rev` is the prediction coefficients reversed (so the descending
 /// history access `buf[base-j]·coef[j]` becomes a forward windowed dot),
@@ -128,7 +128,7 @@ fn short_prediction(buf: &[i32], base: usize, coef_rev: &[i16]) -> i32 {
     out
 }
 
-/// `silk_NSQ_noise_shape_feedback_loop`: AR shaping with the shift-register
+/// AR shaping with the shift-register
 /// state `data1` (`sAR2_Q14`), driven by the new sample `data0`. Returns Q12.
 ///
 /// The right-shift of
@@ -159,7 +159,7 @@ fn noise_shape_feedback_loop(data0: i32, data1: &mut [i32], coef: &[i16], order:
     out << 1
 }
 
-/// `silk_nsq_scale_states`: scale this subframe's input by 1/gain into
+/// Scale this subframe's input by 1/gain into
 /// `x_sc_q10`, rescale the (re-whitened) LTP state, and adjust all states
 /// for a gain change since the previous subframe.
 #[allow(clippy::too_many_arguments, reason = "mirrors the reference signature")]
@@ -250,7 +250,7 @@ fn build_rd_table(offset_q10: i32, lambda_q10: i32) -> [[i32; 4]; 64] {
     table
 }
 
-/// `silk_noise_shape_quantizer`: the per-sample RD quantiser for one
+/// The per-sample RD quantiser for one
 /// subframe. `pxq_base` indexes `nsq.xq`; `pulses`/`xq_out` receive this
 /// subframe's results. `rd_table` is the precomputed RD candidate table
 /// ([`build_rd_table`]).
@@ -388,7 +388,7 @@ fn noise_shape_quantizer(
     nsq.s_lpc_q14.copy_within(length..length + NSQ_LPC_BUF_LENGTH, 0);
 }
 
-/// `silk_NSQ_c`: quantise one frame's input `x16` into `pulses`, writing the
+/// Quantise one frame's input `x16` into `pulses`, writing the
 /// chosen LTP-scaling index. `signal_type`, `quant_offset_type`,
 /// `nlsf_interp_coef_q2` and `seed` come from the frame's side info.
 #[allow(clippy::too_many_arguments, reason = "mirrors the reference signature")]

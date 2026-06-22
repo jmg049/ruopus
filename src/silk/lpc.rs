@@ -10,7 +10,7 @@
 
 use super::math::{clz32, inverse32_var_q, mul, rshift_round, rshift_round64, smmul, smull, smulww, sub_sat32};
 
-/// `SILK_MAX_ORDER_LPC`.
+/// Maximum SILK LPC order.
 pub(crate) const SILK_MAX_ORDER_LPC: usize = 24;
 
 /// Chirps the AR filter `ar` by `chirp_q16`.
@@ -69,15 +69,15 @@ pub(crate) fn lpc_fit(a_qout: &mut [i16], a_qin: &mut [i32], qout: i32, qin: i32
     }
 }
 
-/// `QA` of the inverse-prediction-gain recursion.
+/// Fixed-point precision of the inverse-prediction-gain recursion.
 const QA: i32 = 24;
-/// `A_LIMIT`: `SILK_FIX_CONST(0.99975, 24)`.
+/// Coefficient stability limit, `SILK_FIX_CONST(0.99975, 24)`.
 const A_LIMIT: i32 = 16_773_022;
 /// `SILK_FIX_CONST(1.0 / MAX_PREDICTION_POWER_GAIN, 30)` with the maximum
 /// power gain 1e4.
 const INV_GAIN_MIN_Q30: i32 = 107_374;
 
-/// `MUL32_FRAC_Q(a, b, Q)`.
+/// `(a * b) >> Q` with rounding, computed in 64 bits.
 #[inline]
 const fn mul32_frac_q(a: i32, b: i32, q: i32) -> i32 {
     rshift_round64(smull(a, b), q) as i32

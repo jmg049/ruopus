@@ -8,7 +8,7 @@
 /// Upper bound on the order these helpers handle (`MAX_SHAPE_LPC_ORDER`).
 const MAX_ORDER: usize = 24;
 
-/// `silk_apply_sine_window_FLP`: window `px` with a sine (`win_type==1`) or
+/// Window `px` with a sine (`win_type==1`) or
 /// cosine (`win_type==2`) slope of `length` samples (a multiple of 4).
 pub(crate) fn apply_sine_window(px_win: &mut [f32], px: &[f32], win_type: i32, length: usize) {
     debug_assert!(win_type == 1 || win_type == 2);
@@ -32,7 +32,7 @@ pub(crate) fn apply_sine_window(px_win: &mut [f32], px: &[f32], win_type: i32, l
     }
 }
 
-/// `silk_autocorrelation_FLP`: the first `count` autocorrelation taps.
+/// The first `count` autocorrelation taps.
 pub(crate) fn autocorrelation(results: &mut [f32], input: &[f32], count: usize) {
     let n = input.len();
     let count = count.min(n);
@@ -41,7 +41,7 @@ pub(crate) fn autocorrelation(results: &mut [f32], input: &[f32], count: usize) 
     }
 }
 
-/// `silk_schur_FLP`: reflection coefficients from the autocorrelation,
+/// Reflection coefficients from the autocorrelation,
 /// returning the residual energy.
 pub(crate) fn schur(refl_coef: &mut [f32], auto_corr: &[f32], order: usize) -> f32 {
     let mut c = [[0.0f64; 2]; MAX_ORDER + 1];
@@ -62,7 +62,7 @@ pub(crate) fn schur(refl_coef: &mut [f32], auto_corr: &[f32], order: usize) -> f
     c[0][1] as f32
 }
 
-/// `silk_k2a_FLP`: reflection coefficients to prediction coefficients.
+/// Reflection coefficients to prediction coefficients.
 pub(crate) fn k2a(a: &mut [f32], rc: &[f32], order: usize) {
     for k in 0..order {
         let rck = rc[k];
@@ -76,7 +76,7 @@ pub(crate) fn k2a(a: &mut [f32], rc: &[f32], order: usize) {
     }
 }
 
-/// `silk_bwexpander_FLP`: chirp the AR filter towards the unit circle.
+/// Chirp the AR filter towards the unit circle.
 pub(crate) fn bwexpander(ar: &mut [f32], order: usize, chirp: f32) {
     let mut cfac = chirp;
     for v in ar.iter_mut().take(order - 1) {
@@ -86,12 +86,12 @@ pub(crate) fn bwexpander(ar: &mut [f32], order: usize, chirp: f32) {
     ar[order - 1] *= cfac;
 }
 
-/// `silk_energy_FLP`: sum of squares in double precision.
+/// Sum of squares in double precision.
 pub(crate) fn energy(data: &[f32]) -> f64 {
     crate::simd::dot_f64(data, data)
 }
 
-/// `silk_LPC_analysis_filter_FLP`: the LPC prediction residual of `s`
+/// The LPC prediction residual of `s`
 /// (`r[ix] = s[ix] - Σ_j s[ix-1-j]·a[j]`), with the first `order` outputs
 /// set to zero (the filter starts from zero state).
 pub(crate) fn lpc_analysis_filter_flp(r: &mut [f32], a: &[f32], s: &[f32], length: usize, order: usize) {

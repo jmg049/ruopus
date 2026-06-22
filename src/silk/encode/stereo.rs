@@ -28,7 +28,7 @@ const STEREO_INTERP_LEN_MS: usize = 8;
 const RATIO_SMOOTH_COEF_Q16: i32 = 655;
 const LA_SHAPE_MS: i32 = 5;
 
-/// `silk_ADD_LSHIFT32(a, b, s)` / `silk_SUB_LSHIFT32` / `silk_ADD_RSHIFT32`.
+/// Wrapping `a + (b << s)`.
 #[inline]
 const fn add_lshift32(a: i32, b: i32, s: u32) -> i32 {
     a.wrapping_add(b << s)
@@ -38,13 +38,13 @@ const fn sub_lshift32(a: i32, b: i32, s: u32) -> i32 {
     a.wrapping_sub(b << s)
 }
 
-/// `silk_SAT16`.
+/// Saturate to i16.
 #[inline]
 fn sat16(a: i32) -> i16 {
     a.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
 }
 
-/// `silk_inner_prod_aligned_scale`: `Σ (x[i]·y[i]) >> scale`.
+/// `Σ (x[i]·y[i]) >> scale`.
 fn inner_prod_aligned_scale(x: &[i16], y: &[i16], scale: u32, len: usize) -> i32 {
     let mut sum = 0i32;
     for i in 0..len {
@@ -65,7 +65,7 @@ pub(crate) struct StereoEncState {
     silent_side_len: i16,
 }
 
-/// `silk_stereo_find_predictor`: the Q13 prediction weight of `y` from `x`
+/// The Q13 prediction weight of `y` from `x`
 /// and the residual/mid energy ratio (Q14), updating the smoothed mid/
 /// residual norms in `mid_res_amp_q0` (2 elements).
 fn find_predictor(x: &[i16], y: &[i16], mid_res_amp_q0: &mut [i32], length: usize, smooth_coef_q16: i32) -> (i32, i32) {
@@ -99,7 +99,7 @@ fn find_predictor(x: &[i16], y: &[i16], mid_res_amp_q0: &mut [i32], length: usiz
     (pred_q13, ratio_q14)
 }
 
-/// `silk_stereo_quant_pred`: quantise the two predictor weights (Q13) in
+/// Quantise the two predictor weights (Q13) in
 /// place, returning the codebook indices `ix[2][3]`. On return `pred_q13[0]`
 /// holds the first weight minus the second (the form the NSQ/decoder use).
 pub(crate) fn stereo_quant_pred(pred_q13: &mut [i32; 2]) -> [[i8; 3]; 2] {
@@ -132,7 +132,7 @@ pub(crate) fn stereo_quant_pred(pred_q13: &mut [i32; 2]) -> [[i8; 3]; 2] {
     ix
 }
 
-/// `silk_stereo_encode_pred`: code the predictor indices (joint index then
+/// Code the predictor indices (joint index then
 /// two uniform refinements per predictor).
 pub(crate) fn stereo_encode_pred(enc: &mut RangeEncoder, ix: &[[i8; 3]; 2]) {
     let n = 5 * ix[0][2] + ix[1][2];
@@ -144,12 +144,12 @@ pub(crate) fn stereo_encode_pred(enc: &mut RangeEncoder, ix: &[[i8; 3]; 2]) {
     }
 }
 
-/// `silk_stereo_encode_mid_only`: code the mid-only flag.
+/// Code the mid-only flag.
 pub(crate) fn stereo_encode_mid_only(enc: &mut RangeEncoder, mid_only_flag: i8) {
     enc.encode_icdf(mid_only_flag as usize, &STEREO_ONLY_CODE_MID_ICDF, 8);
 }
 
-/// `silk_stereo_LR_to_MS`: convert L/R to mid/side, choosing the predictor
+/// Convert L/R to mid/side, choosing the predictor
 /// weights, the mid/side rate split and the mid-only flag. `x1` and `x2` each
 /// hold 2 history samples then the `frame_length` frame (length
 /// `frame_length + 2`). On return `x1` holds the mid signal (frame at `[2..]`,

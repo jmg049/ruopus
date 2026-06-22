@@ -21,14 +21,13 @@ use super::tables::{
     SHELL_CODE_TABLE_OFFSETS, SHELL_CODE_TABLE0, SHELL_CODE_TABLE1, SHELL_CODE_TABLE2, SHELL_CODE_TABLE3, SIGN_ICDF,
 };
 
-/// `SHELL_CODEC_FRAME_LENGTH`: samples per shell block.
+/// Samples per shell block.
 pub(crate) const SHELL_CODEC_FRAME_LENGTH: usize = 16;
-/// `LOG2_SHELL_CODEC_FRAME_LENGTH`.
+/// Base-2 logarithm of the shell-block length.
 const LOG2_SHELL_CODEC_FRAME_LENGTH: usize = 4;
-/// `SILK_MAX_PULSES`: maximum pulses directly codable per block.
+/// Maximum pulses directly codable per block.
 const SILK_MAX_PULSES: usize = 16;
-/// `N_RATE_LEVELS`: number of rate levels (the last is the LSB-extension
-/// table).
+/// Number of rate levels (the last is the LSB-extension table).
 const N_RATE_LEVELS: usize = 10;
 
 /// One node of the shell decomposition.

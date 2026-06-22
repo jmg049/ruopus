@@ -10,23 +10,23 @@ use alloc::vec;
 
 use super::super::math::{rshift_round, smlawb, smulwb};
 
-/// `silk_resampler_down2_0` / `_1` (Q15-ish allpass coefficients).
+/// Half-band allpass coefficients for `down2` (Q15-ish).
 const DOWN2_0: i32 = 9872;
 const DOWN2_1: i32 = 39809 - 65536; // -25727
 
-/// `silk_Resampler_2_3_COEFS_LQ`: AR coefficients (`[0..2]`, Q14) and FIR
+/// 2/3 resampler coefficients: AR coefficients (`[0..2]`, Q14) and FIR
 /// interpolation coefficients (`[2..6]`).
 const COEFS_2_3: [i32; 6] = [-2797, -6507, 4697, 10739, 1567, 8276];
 const ORDER_FIR: usize = 4;
-/// `RESAMPLER_MAX_BATCH_SIZE_IN` (10 ms × 48 kHz).
+/// Maximum input batch size (10 ms × 48 kHz).
 const MAX_BATCH_SIZE_IN: usize = 480;
 
-/// `silk_SAT16`.
+/// Saturate to i16.
 fn sat16(a: i32) -> i16 {
     a.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
 }
 
-/// `silk_resampler_down2`: decimate `inp` by two through a second-order
+/// Decimate `inp` by two through a second-order
 /// allpass half-band filter. `out` receives `inp.len()/2` samples; `s` is
 /// the 2-element state carried across calls.
 pub(crate) fn down2(s: &mut [i32; 2], out: &mut [i16], inp: &[i16]) {
@@ -48,7 +48,7 @@ pub(crate) fn down2(s: &mut [i32; 2], out: &mut [i16], inp: &[i16]) {
     }
 }
 
-/// `silk_resampler_private_AR2`: second-order AR filter, output in Q8.
+/// Second-order AR filter, output in Q8.
 fn ar2(s: &mut [i32], out_q8: &mut [i32], inp: &[i16], a_q14: &[i32]) {
     for (k, &xn) in inp.iter().enumerate() {
         let out32 = s[0].wrapping_add(i32::from(xn) << 8);
@@ -59,7 +59,7 @@ fn ar2(s: &mut [i32], out_q8: &mut [i32], inp: &[i16], a_q14: &[i32]) {
     }
 }
 
-/// `silk_resampler_down2_3`: decimate `inp` by 2/3 (12→8 kHz). `out`
+/// Decimate `inp` by 2/3 (12→8 kHz). `out`
 /// receives `floor(2*inp.len()/3)` samples; `s` is the 6-element state.
 pub(crate) fn down2_3(s: &mut [i32; 6], out: &mut [i16], inp: &[i16]) {
     let mut buf = vec![0i32; MAX_BATCH_SIZE_IN + ORDER_FIR];
