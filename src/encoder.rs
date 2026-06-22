@@ -965,6 +965,8 @@ impl OpusEncoder {
             let (silk, rl, rr, _, _) = self.silk_stereo.as_mut().expect("configured");
             silk.set_bitrate(bitrate.clamp(5000, 100_000));
             silk.set_complexity(self.complexity);
+            silk.set_inband_fec(self.use_inband_fec);
+            silk.set_packet_loss_perc(i32::from(self.packet_loss_perc));
             let lf: Vec<f32> = pcm.iter().step_by(2).copied().collect();
             let rf: Vec<f32> = pcm.iter().skip(1).step_by(2).copied().collect();
             let li = crate::silk::encode::resample_in::resample_48k(rl, &lf);
@@ -1056,10 +1058,12 @@ impl OpusEncoder {
             let (silk, resampler, _, _) = self.silk.as_mut().expect("configured");
             silk.set_bitrate(silk_bps);
             silk.set_complexity(self.complexity);
-            // Hybrid in-band FEC is not yet supported (the LBRR copy would have
-            // to share the CELT byte budget); keep it off on the shared SILK
-            // encoder even when FEC is globally enabled.
-            silk.set_inband_fec(false);
+            // Hybrid in-band FEC: the LBRR copy shares the SILK byte budget with
+            // the regular low band. `encode_into` measures the LBRR cost against
+            // the `max_bits` cap and skips it for a frame that would crowd out
+            // the regular frames (and thus the CELT high band).
+            silk.set_inband_fec(self.use_inband_fec);
+            silk.set_packet_loss_perc(i32::from(self.packet_loss_perc));
             let internal = crate::silk::encode::resample_in::resample_48k(resampler, pcm);
             // Hard bit cap so the SILK low band leaves the CELT high band room.
             silk.encode_into(&mut enc, &internal, Some((silk_cap * 8) as i32));
@@ -1081,6 +1085,11 @@ impl OpusEncoder {
             let (silk, rl, rr, _, _) = self.silk_stereo.as_mut().expect("configured");
             silk.set_bitrate(silk_bps);
             silk.set_complexity(self.complexity);
+            // Hybrid stereo in-band FEC: the LBRR copy shares the SILK byte
+            // budget, measured against `max_bits` and skipped when it would
+            // crowd out the regular low band (and thus the CELT high band).
+            silk.set_inband_fec(self.use_inband_fec);
+            silk.set_packet_loss_perc(i32::from(self.packet_loss_perc));
             let lf: Vec<f32> = pcm.iter().step_by(2).copied().collect();
             let rf: Vec<f32> = pcm.iter().skip(1).step_by(2).copied().collect();
             let li = crate::silk::encode::resample_in::resample_48k(rl, &lf);
@@ -1694,6 +1703,249 @@ mod tests {
         assert!(
             fec_corr > conceal_corr + 0.05,
             "multi-frame FEC ({fec_corr:.3}) should beat concealment ({conceal_corr:.3})"
+        );
+    }
+
+
+    /// With in-band FEC enabled, a *stereo* SILK packet still decodes normally
+    /// on the `OpusDecoder` finishing on the encoder's exact range state - the
+    /// redundant LBRR data (mid + side) is read-and-discarded by the normal
+    /// decode path, so the oracle stays in sync. Covers the mid-only→side
+    /// transition (where the side LBRR flags vary per frame) and a multi-frame
+    /// (40 ms) packet where the LBRR symbols are coded.
+    #[test]
+    fn stereo_fec_packets_still_round_trip_on_normal_decode() {
+        for &spf in &[960usize, 1920] {
+            let mut enc = OpusEncoder::new(2);
+            enc.set_bandwidth(Bandwidth::WideBand);
+            enc.set_bitrate(Some(32_000));
+            enc.set_inband_fec(true);
+            assert!(enc.inband_fec());
+            let mut dec = OpusDecoder::new(2);
+            for f in 0..16 {
+                let mut pcm = Vec::with_capacity(spf * 2);
+                for i in 0..spf {
+                    let t = (f * spf + i) as f32 / 48_000.0;
+                    // A width that builds up so the side channel activates,
+                    // exercising the mid-only→side LBRR transition.
+                    let w = (f as f32 / 16.0).min(1.0);
+                    let l = 0.4 * (2.0 * core::f32::consts::PI * 210.0 * t).sin();
+                    let r = (1.0 - w) * l
+                        + w * 0.35 * (2.0 * core::f32::consts::PI * 350.0 * t).sin();
+                    pcm.push(l);
+                    pcm.push(r);
+                }
+                let packet = enc.encode_silk(&pcm, 1275).expect("stereo silk encode");
+                let out = dec.decode_packet(&packet).expect("decode");
+                assert_eq!(out.len(), spf * 2);
+                assert_eq!(
+                    dec.final_range(),
+                    enc.final_range(),
+                    "stereo FEC range mismatch spf={spf} frame {f}"
+                );
+            }
+        }
+    }
+
+    /// End-to-end *stereo* FEC recovery: enable FEC, encode a stereo sequence,
+    /// "lose" a packet, and reconstruct it from the next packet's LBRR via
+    /// `OpusDecoder::decode_fec`. The recovered stereo frame must correlate with
+    /// the original input and beat plain concealment, proving the mid (and side)
+    /// LBRR data is doing real work. FEC-off output stays byte-identical.
+    #[test]
+    fn stereo_fec_recovers_a_lost_frame() {
+        let spf = 960usize; // 20 ms WB stereo
+        // Per-frame frequency steps so concealment cannot predict the lost
+        // frame; a steady stereo width keeps the side channel coded.
+        let make = |f: usize| -> Vec<f32> {
+            let freq = 200.0 + 80.0 * (f as f32);
+            let mut pcm = Vec::with_capacity(spf * 2);
+            for i in 0..spf {
+                let t = (f * spf + i) as f32 / 48_000.0;
+                let l = 0.4 * (2.0 * core::f32::consts::PI * freq * t).sin();
+                let r = 0.25 * (2.0 * core::f32::consts::PI * freq * t + 0.4).sin()
+                    + 0.3 * (2.0 * core::f32::consts::PI * (freq * 1.6) * t).sin();
+                pcm.push(l);
+                pcm.push(r);
+            }
+            pcm
+        };
+
+        let encode_seq = |fec: bool| -> Vec<Vec<u8>> {
+            let mut enc = OpusEncoder::new(2);
+            enc.set_bandwidth(Bandwidth::WideBand);
+            enc.set_bitrate(Some(40_000));
+            enc.set_inband_fec(fec);
+            (0..7).map(|f| enc.encode_silk(&make(f), 1275).expect("encode")).collect()
+        };
+        let off = encode_seq(false);
+        let on = encode_seq(true);
+
+        // FEC-off output is unchanged: identical to a default stereo encoder.
+        let mut plain = OpusEncoder::new(2);
+        plain.set_bandwidth(Bandwidth::WideBand);
+        plain.set_bitrate(Some(40_000));
+        for (f, off_p) in off.iter().enumerate() {
+            let p = plain.encode_silk(&make(f), 1275).expect("encode");
+            assert_eq!(&p, off_p, "FEC-off stereo packet {f} differs from default");
+        }
+        assert!(
+            on.iter().zip(&off).any(|(a, b)| a.len() > b.len()),
+            "stereo FEC packets should be larger than non-FEC"
+        );
+
+        // Recover packet 3 from packet 4's LBRR after priming with 0..3.
+        let recover = |packets: &[Vec<u8>]| -> Vec<f32> {
+            let mut dec = OpusDecoder::new(2);
+            for p in packets.iter().take(3) {
+                dec.decode_packet(p).expect("decode");
+            }
+            dec.decode_fec(&packets[4], spf).expect("decode_fec")
+        };
+        let rec = recover(&on);
+        let conc = recover(&off);
+        assert!(rec.len() >= spf * 2 && conc.len() >= spf * 2);
+
+        // Correlate the recovered tail's left channel with the original input.
+        let orig = make(3);
+        let orig_l: Vec<f32> = orig.iter().step_by(2).copied().collect();
+        let corr_of = |sig: &[f32]| -> f64 {
+            let frame = &sig[sig.len() - spf * 2..];
+            let frame_l: Vec<f32> = frame.iter().step_by(2).copied().collect();
+            (0..300usize)
+                .map(|d| {
+                    let (mut s, mut dot, mut e) = (0.0f64, 0.0f64, 0.0f64);
+                    for i in 0..spf - d {
+                        let a = f64::from(orig_l[i]);
+                        let b = f64::from(frame_l[i + d]);
+                        s += a * a;
+                        dot += a * b;
+                        e += b * b;
+                    }
+                    dot / (s.sqrt() * e.sqrt()).max(1e-9)
+                })
+                .fold(0.0f64, f64::max)
+        };
+        let fec_corr = corr_of(&rec);
+        let conceal_corr = corr_of(&conc);
+        let frame = &rec[rec.len() - spf * 2..];
+        let energy: f64 = frame.iter().map(|&v| f64::from(v) * f64::from(v)).sum();
+        assert!(energy > 1.0, "recovered stereo frame is silent (energy {energy:.3})");
+        assert!(fec_corr > 0.6, "stereo FEC correlation {fec_corr:.3} too low");
+        assert!(
+            fec_corr > conceal_corr + 0.05,
+            "stereo FEC ({fec_corr:.3}) should beat concealment ({conceal_corr:.3})"
+        );
+    }
+
+    /// With in-band FEC enabled, *hybrid* packets (SILK low band + CELT high
+    /// band) still decode normally on the `OpusDecoder` finishing on the
+    /// encoder's exact range state - the SILK LBRR copy shares the byte budget
+    /// and the CELT high band still fits. Covers mono and stereo, SWB and FB.
+    #[test]
+    fn hybrid_fec_packets_still_round_trip_on_normal_decode() {
+        for &chans in &[1usize, 2] {
+            for &bw in &[Bandwidth::SuperWideBand, Bandwidth::FullBand] {
+                let spf = 960usize; // 20 ms
+                let mut enc = OpusEncoder::new(chans);
+                enc.set_bandwidth(bw);
+                enc.set_bitrate(Some(32_000));
+                enc.set_inband_fec(true);
+                let mut dec = OpusDecoder::new(chans);
+                for f in 0..10 {
+                    let mut pcm = Vec::with_capacity(spf * chans);
+                    for i in 0..spf {
+                        let t = (f * spf + i) as f32 / 48_000.0;
+                        let l = 0.35 * (2.0 * core::f32::consts::PI * 230.0 * t).sin()
+                            + 0.15 * (2.0 * core::f32::consts::PI * 3500.0 * t).sin();
+                        pcm.push(l);
+                        if chans == 2 {
+                            let r = 0.3 * (2.0 * core::f32::consts::PI * 230.0 * t + 0.5).sin()
+                                + 0.15 * (2.0 * core::f32::consts::PI * 4200.0 * t).sin();
+                            pcm.push(r);
+                        }
+                    }
+                    let packet = enc.encode_hybrid(&pcm, 1275).expect("hybrid encode");
+                    let out = dec.decode_packet(&packet).expect("decode");
+                    assert_eq!(out.len(), spf * chans);
+                    assert_eq!(
+                        dec.final_range(),
+                        enc.final_range(),
+                        "hybrid FEC range mismatch chans={chans} bw={bw:?} frame {f}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// End-to-end *hybrid* FEC recovery: enable FEC, encode a hybrid sequence,
+    /// "lose" a packet, and reconstruct the SILK low band from the next packet's
+    /// LBRR via `OpusDecoder::decode_fec`. The recovered frame correlates with
+    /// the original (the low band carries the bulk of the energy) and beats
+    /// plain concealment. The CELT high band has no FEC and is concealed.
+    #[test]
+    fn hybrid_fec_recovers_a_lost_frame() {
+        let spf = 960usize; // 20 ms FB mono hybrid
+        let make = |f: usize| -> Vec<f32> {
+            let freq = 200.0 + 70.0 * (f as f32);
+            (0..spf)
+                .map(|i| {
+                    let t = (f * spf + i) as f32 / 48_000.0;
+                    0.4 * (2.0 * core::f32::consts::PI * freq * t).sin()
+                        + 0.12 * (2.0 * core::f32::consts::PI * 3000.0 * t).sin()
+                })
+                .collect()
+        };
+        let encode_seq = |fec: bool| -> Vec<Vec<u8>> {
+            let mut enc = OpusEncoder::new(1);
+            enc.set_bandwidth(Bandwidth::FullBand);
+            // A generous rate so the SILK low band has room for both the regular
+            // frame and its LBRR copy alongside the CELT high band.
+            enc.set_bitrate(Some(64_000));
+            enc.set_inband_fec(fec);
+            (0..7).map(|f| enc.encode_hybrid(&make(f), 1275).expect("encode")).collect()
+        };
+        let on = encode_seq(true);
+        let off = encode_seq(false);
+        // Unlike SILK-only, hybrid packets are budget-filled, so FEC-on packets
+        // are not necessarily larger - the LBRR copy shares the fixed budget
+        // with CELT. The recovery quality below is what proves the LBRR works.
+        let _ = &off;
+
+        let recover = |packets: &[Vec<u8>]| -> Vec<f32> {
+            let mut dec = OpusDecoder::new(1);
+            for p in packets.iter().take(3) {
+                dec.decode_packet(p).expect("decode");
+            }
+            dec.decode_fec(&packets[4], spf).expect("decode_fec")
+        };
+        let rec = recover(&on);
+        let conc = recover(&off);
+        assert!(rec.len() >= spf && conc.len() >= spf);
+
+        let orig = make(3);
+        let corr_of = |sig: &[f32]| -> f64 {
+            let frame = &sig[sig.len() - spf..];
+            (0..300usize)
+                .map(|d| {
+                    let (mut s, mut dot, mut e) = (0.0f64, 0.0f64, 0.0f64);
+                    for i in 0..spf - d {
+                        let a = f64::from(orig[i]);
+                        let b = f64::from(frame[i + d]);
+                        s += a * a;
+                        dot += a * b;
+                        e += b * b;
+                    }
+                    dot / (s.sqrt() * e.sqrt()).max(1e-9)
+                })
+                .fold(0.0f64, f64::max)
+        };
+        let fec_corr = corr_of(&rec);
+        let conceal_corr = corr_of(&conc);
+        assert!(fec_corr > 0.5, "hybrid FEC correlation {fec_corr:.3} too low");
+        assert!(
+            fec_corr > conceal_corr + 0.05,
+            "hybrid FEC ({fec_corr:.3}) should beat concealment ({conceal_corr:.3})"
         );
     }
 

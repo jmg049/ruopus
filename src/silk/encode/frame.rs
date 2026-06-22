@@ -203,13 +203,13 @@ impl SilkChannelEncoder {
         self.encode_frame_inner(enc, input, cond_coding, max_bits, false).0
     }
 
-    /// Runs analysis + NSQ for one frame and captures the coded `indices` and
-    /// `pulses` *without* emitting them, advancing the cross-frame analysis
-    /// state (NSQ history, pitch/voicing, input history, gain accumulator,
-    /// entropy history) exactly as a regular [`encode_frame`] would. The caller
-    /// then emits the captured frame with [`emit_frame`](Self::emit_frame),
-    /// optionally as an LBRR copy first. This drives multi-frame FEC packets,
-    /// where all LBRR frames precede all regular frames in the bitstream.
+    /// Codes the regular frame into `enc` honouring the cumulative `max_bits`
+    /// cap (so hybrid packets reserve the CELT high band its room) and captures
+    /// the chosen `indices`/`pulses`, advancing the cross-frame analysis state
+    /// (NSQ history, pitch/voicing, input history, gain accumulator, entropy
+    /// history) and `ec_prev` exactly as a regular [`encode_frame`] would. This
+    /// is the in-band FEC capture path: the captured frame is stored to re-emit
+    /// as the *next* packet's LBRR copy via [`emit_frame`](Self::emit_frame).
     ///
     /// Returns `(indices, pulses)` for the regular frame and, when
     /// `lbrr_gain_increases > 0`, a reduced-rate LBRR copy `(indices, pulses)`
@@ -217,24 +217,21 @@ impl SilkChannelEncoder {
     /// (`silk_LBRR_encode`). When the gain increase is 0 the LBRR copy is
     /// `None` and the caller reuses the regular frame as the LBRR copy.
     #[allow(clippy::type_complexity)]
-    pub(crate) fn analyze_frame(
+    pub(crate) fn encode_frame_capture(
         &mut self,
+        enc: &mut RangeEncoder,
         input: &[i16],
         cond_coding: CondCoding,
+        max_bits: Option<i32>,
     ) -> ((SideInfoIndices, Vec<i8>), Option<(SideInfoIndices, Vec<i8>)>) {
-        // Emit into a throwaway encoder; we only want the analysis state and the
-        // captured indices/pulses. `ec_prev` is left as the pre-frame state
-        // (the emission caller advances it).
-        let ec_prev_pre = self.ec_prev;
-        let mut sink = RangeEncoder::new(0);
         let want_lbrr = self.lbrr_gain_increases > 0;
-        let (indices, pulses, lbrr) = self.encode_frame_inner(&mut sink, input, cond_coding, None, want_lbrr);
-        self.ec_prev = ec_prev_pre;
+        let (indices, pulses, lbrr) = self.encode_frame_inner(enc, input, cond_coding, max_bits, want_lbrr);
         ((indices, pulses), lbrr)
     }
 
-    /// Emits a previously [`analyze_frame`](Self::analyze_frame)d frame into
-    /// `enc` with the given conditional-coding mode, as the LBRR copy when
+    /// Emits a previously [`encode_frame_capture`](Self::encode_frame_capture)d
+    /// frame into `enc` with the given conditional-coding mode, as the LBRR copy
+    /// when
     /// `lbrr` is true (which forces the VAD-present type coding). Advances the
     /// entropy history (`ec_prev`) only - no analysis state.
     pub(crate) fn emit_frame(

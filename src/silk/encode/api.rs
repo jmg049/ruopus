@@ -8,8 +8,10 @@
 //! that [`crate::silk::SilkDecoder`] decodes. The stereo path
 //! runs the LR→MS analysis, codes the predictor weights and per-frame
 //! mid-only flag, and conditionally codes the side channel (with the
-//! mid-only→side transition reset). Frames are always coded active (no DTX)
-//! and without in-band FEC.
+//! mid-only→side transition reset). Frames are always coded active (no DTX).
+//! Both paths support in-band FEC (LBRR): each packet carries a reduced-rate
+//! redundant copy of the *previous* packet's frame(s) so a lost packet can be
+//! recovered from its successor via `decode_fec`.
 
 extern crate alloc;
 use alloc::vec;
@@ -207,9 +209,29 @@ impl SilkEncoder {
         // packet's frames (if that packet had the same frame count), then the
         // current frames coded normally. We capture the current frames' coded
         // indices/pulses into `lbrr_prev` for the *next* packet to emit as LBRR.
-        // FEC packets never use the hybrid byte cap (FEC is SILK-only).
-        let _ = max_bits;
-        let have_lbrr = self.lbrr_prev.len() == n_frames;
+        //
+        // In a hybrid packet (`max_bits` set), the LBRR copy must share the SILK
+        // byte budget with the regular frames so the CELT high band still fits:
+        // measure the LBRR cost on a trial clone first and only carry it if it
+        // leaves the regular frames at least half the budget. Otherwise this
+        // packet skips its LBRR (the previous frame loses FEC), but the current
+        // frames are still captured for the *next* packet to try.
+        let mut have_lbrr = self.lbrr_prev.len() == n_frames;
+        if have_lbrr && let Some(cap) = max_bits {
+            let lbrr_bits = {
+                let mut trial = enc.clone();
+                let mut ch_trial = self.ch.clone();
+                for (i, (ind, pulses)) in self.lbrr_prev.iter().enumerate() {
+                    let cond = if i == 0 { CondCoding::Independently } else { CondCoding::Conditionally };
+                    ch_trial.emit_frame(&mut trial, ind, pulses, cond, true);
+                }
+                trial.tell() as i32 - enc.tell() as i32
+            };
+            // Reserve at least half the SILK budget for the regular frames.
+            if lbrr_bits > cap / 2 {
+                have_lbrr = false;
+            }
+        }
 
         // Header: VAD flags (all active), the LBRR flag, then for multi-frame
         // packets the per-frame LBRR symbol (all frames carry LBRR here).
@@ -250,21 +272,36 @@ impl SilkEncoder {
         self.ch.set_lbrr_gain_increases(lbrr_gain_increases);
         self.lbrr_in_previous_packet = true;
 
-        // Analyze + emit the current frames, capturing each for next packet's
-        // LBRR. `analyze_frame` advances the analysis/NSQ state and returns the
-        // regular coded indices+pulses plus a reduced-rate LBRR copy;
-        // `emit_frame` then codes the regular frame. The LBRR copy (or the
-        // regular frame when the second NSQ pass is disabled) is stashed.
+        // Emit the current frames, capturing each for the next packet's LBRR.
+        // `encode_frame_capture` codes the regular frame into `enc` (honouring
+        // the cumulative `max_bits` cap for hybrid, so the CELT high band keeps
+        // its room) and returns the regular indices+pulses plus a reduced-rate
+        // LBRR copy. The LBRR copy (or the regular frame when the second NSQ
+        // pass is disabled) is stashed for the next packet to emit.
         let mut current: Vec<(super::super::indices::SideInfoIndices, Vec<i8>)> = Vec::with_capacity(n_frames);
         for i in 0..n_frames {
             let cond = if i == 0 { CondCoding::Independently } else { CondCoding::Conditionally };
             let f = &input[i * frame_length..(i + 1) * frame_length];
-            let ((ind, pulses), lbrr) = self.ch.analyze_frame(f, cond);
-            self.ch.emit_frame(enc, &ind, &pulses, cond, false);
+            let ((ind, pulses), lbrr) = self.ch.encode_frame_capture(enc, f, cond, max_bits);
             current.push(lbrr.unwrap_or((ind, pulses)));
         }
         self.lbrr_prev = current;
     }
+}
+
+/// One stereo packet's captured LBRR data (for emission in the next packet).
+/// Mirrors `SilkEncoder::lbrr_prev` but carries the stereo predictor indices,
+/// the mid-only flag, and both channels' coded frames.
+#[derive(Clone)]
+struct StereoLbrrFrame {
+    /// Stereo predictor indices coded by `stereo_encode_pred`.
+    ix: [[i8; 3]; 2],
+    /// Whether this frame was mid-only (no side channel coded).
+    mid_only: bool,
+    /// Captured mid (channel 0) indices and pulses.
+    mid: (super::super::indices::SideInfoIndices, Vec<i8>),
+    /// Captured side (channel 1) indices and pulses, present iff `!mid_only`.
+    side: Option<(super::super::indices::SideInfoIndices, Vec<i8>)>,
 }
 
 /// A SILK encoder for one stereo stream (mid/side coding).
@@ -279,6 +316,20 @@ pub struct SilkStereoEncoder {
     final_range: u32,
     fs_khz: i32,
     nb_subfr: usize,
+    /// In-band FEC (LBRR) generation enabled.
+    use_inband_fec: bool,
+    /// Expected packet-loss percentage 0-100 (`PacketLoss_perc`): drives the
+    /// loss-robust LTP scaling and the LBRR gain increase on both channels.
+    packet_loss_perc: i32,
+    /// Whether the *previous* packet carried LBRR (`LBRR_in_previous_packet`):
+    /// selects the LBRR gain increase (7 on the first LBRR packet, otherwise a
+    /// `packet_loss_perc`-driven value).
+    lbrr_in_previous_packet: bool,
+    /// The previous packet's captured LBRR frames, emitted as the LBRR copy in
+    /// the current packet (one-packet delay, matching libopus). Empty when no
+    /// LBRR is pending (FEC just enabled, or the previous packet's frame count
+    /// differed).
+    lbrr_prev: Vec<StereoLbrrFrame>,
 }
 
 impl SilkStereoEncoder {
@@ -296,12 +347,39 @@ impl SilkStereoEncoder {
             final_range: 0,
             fs_khz,
             nb_subfr,
+            use_inband_fec: false,
+            packet_loss_perc: 0,
+            lbrr_in_previous_packet: false,
+            lbrr_prev: Vec::new(),
         }
     }
 
     /// Sets the total (both channels) target bitrate (bps).
     pub fn set_bitrate(&mut self, bps: i32) {
         self.total_rate_bps = bps;
+    }
+
+    /// Enables or disables in-band FEC (LBRR) generation. When enabled, each
+    /// stereo packet carries a redundant copy of the previous packet's mid (and
+    /// side, when coded) frames so the decoder can reconstruct a lost frame.
+    pub fn set_inband_fec(&mut self, on: bool) {
+        self.use_inband_fec = on;
+    }
+
+    /// Whether in-band FEC is enabled.
+    #[must_use]
+    pub const fn inband_fec(&self) -> bool {
+        self.use_inband_fec
+    }
+
+    /// Sets the expected packet-loss percentage 0-100
+    /// (`OPUS_SET_PACKET_LOSS_PERC`). When > 0, independently coded voiced
+    /// frames raise their LTP scaling index for loss robustness, and any LBRR
+    /// copy is coded at a reduced rate (a larger gain increase).
+    pub fn set_packet_loss_perc(&mut self, perc: i32) {
+        self.packet_loss_perc = perc.clamp(0, 100);
+        self.mid.set_packet_loss_perc(perc);
+        self.side.set_packet_loss_perc(perc);
     }
 
     /// Sets the encode complexity 0-10 for both channels.
@@ -401,17 +479,171 @@ impl SilkStereoEncoder {
             });
         }
 
-        // Header: ch0 (mid) VAD flags (all active) + LBRR, then ch1 (side)
-        // VAD flags (active iff the side is coded) + LBRR.
+        if !self.use_inband_fec {
+            // Header: ch0 (mid) VAD flags (all active) + LBRR (off), then ch1
+            // (side) VAD flags (active iff the side is coded) + LBRR (off).
+            for _ in 0..n_frames {
+                enc.encode_bit_logp(true, 1);
+            }
+            enc.encode_bit_logp(false, 1);
+            for fd in &frames {
+                enc.encode_bit_logp(!fd.mid_only, 1);
+            }
+            enc.encode_bit_logp(false, 1);
+
+            for (i, fd) in frames.iter().enumerate() {
+                stereo_encode_pred(&mut *enc, &fd.ix);
+                if fd.mid_only {
+                    stereo_encode_mid_only(&mut *enc, 1);
+                }
+                let mid_cond = if i == 0 {
+                    CondCoding::Independently
+                } else {
+                    CondCoding::Conditionally
+                };
+                self.mid.set_bitrate(fd.rates[0]);
+                self.mid.encode_frame(&mut *enc, &fd.mid, mid_cond, max_bits);
+                if !fd.mid_only {
+                    if self.prev_mid_only {
+                        self.side.reset_side_prediction();
+                    }
+                    let side_cond = if i == 0 {
+                        CondCoding::Independently
+                    } else if self.prev_mid_only {
+                        CondCoding::IndependentlyNoLtpScaling
+                    } else {
+                        CondCoding::Conditionally
+                    };
+                    self.side.set_bitrate(fd.rates[1]);
+                    self.side.encode_frame(&mut *enc, &fd.side, side_cond, max_bits);
+                }
+                self.prev_mid_only = fd.mid_only;
+            }
+            // No LBRR emitted this packet; the next FEC packet starts fresh.
+            self.lbrr_in_previous_packet = false;
+            self.lbrr_prev.clear();
+            return;
+        }
+
+        // In-band FEC. The current packet carries the LBRR copy of the
+        // *previous* packet's frames (if that packet had the same frame count),
+        // then the current frames coded normally. We capture each current frame
+        // into `lbrr_prev` for the *next* packet's LBRR copy.
+        //
+        // In a hybrid packet (`max_bits` set), the combined mid+side LBRR copy
+        // shares the SILK byte budget with the regular frames: measure its cost
+        // on a trial clone first and only carry it if it leaves the regular
+        // frames at least half the budget. Otherwise skip this packet's LBRR.
+        let mut have_lbrr = self.lbrr_prev.len() == n_frames;
+        if have_lbrr && let Some(cap) = max_bits {
+            let lbrr_bits = {
+                let mut trial = enc.clone();
+                let mut mid_t = self.mid.clone();
+                let mut side_t = self.side.clone();
+                for (i, f) in self.lbrr_prev.iter().enumerate() {
+                    stereo_encode_pred(&mut trial, &f.ix);
+                    if f.mid_only {
+                        stereo_encode_mid_only(&mut trial, 1);
+                    }
+                    let cond = if i == 0 { CondCoding::Independently } else { CondCoding::Conditionally };
+                    mid_t.emit_frame(&mut trial, &f.mid.0, &f.mid.1, cond, true);
+                    if let Some((sind, spulses)) = &f.side {
+                        let prev_side = i > 0 && !self.lbrr_prev[i - 1].mid_only;
+                        let side_cond =
+                            if prev_side { CondCoding::Conditionally } else { CondCoding::Independently };
+                        side_t.emit_frame(&mut trial, sind, spulses, side_cond, true);
+                    }
+                }
+                trial.tell() as i32 - enc.tell() as i32
+            };
+            if lbrr_bits > cap / 2 {
+                have_lbrr = false;
+            }
+        }
+
+        // Header: ch0 (mid) VAD flags (all active) + LBRR flag (and, for
+        // multi-frame packets, the per-frame LBRR symbol - all frames carry
+        // LBRR), then ch1 (side) VAD flags + LBRR flag. The side's per-frame
+        // LBRR symbol mirrors which frames coded a side channel.
         for _ in 0..n_frames {
             enc.encode_bit_logp(true, 1);
         }
-        enc.encode_bit_logp(false, 1);
+        enc.encode_bit_logp(have_lbrr, 1);
+        if have_lbrr && n_frames > 1 {
+            let table: &[u8] = if n_frames == 2 { &LBRR_FLAGS_2_ICDF } else { &LBRR_FLAGS_3_ICDF };
+            let symbol = (1usize << n_frames) - 1; // mid: all frames flagged
+            enc.encode_icdf(symbol - 1, table, 8);
+        }
         for fd in &frames {
             enc.encode_bit_logp(!fd.mid_only, 1);
         }
-        enc.encode_bit_logp(false, 1);
+        // Side LBRR: a frame carries a side LBRR copy iff that previous-packet
+        // frame coded its side channel (i.e. was not mid-only).
+        let side_lbrr: Vec<bool> = if have_lbrr {
+            self.lbrr_prev.iter().map(|f| !f.mid_only).collect()
+        } else {
+            Vec::new()
+        };
+        let side_has_lbrr = side_lbrr.iter().any(|&b| b);
+        enc.encode_bit_logp(have_lbrr && side_has_lbrr, 1);
+        if have_lbrr && side_has_lbrr && n_frames > 1 {
+            let table: &[u8] = if n_frames == 2 { &LBRR_FLAGS_2_ICDF } else { &LBRR_FLAGS_3_ICDF };
+            let mut symbol = 0usize;
+            for (i, &b) in side_lbrr.iter().enumerate() {
+                if b {
+                    symbol |= 1 << i;
+                }
+            }
+            enc.encode_icdf(symbol - 1, table, 8);
+        }
 
+        // Emit the previous packet's LBRR frames first. For each LBRR frame, the
+        // decoder reads (when the mid is flagged): the stereo predictor, then -
+        // only when the side has *no* LBRR for that frame - the mid-only flag,
+        // then the mid frame, then (when flagged) the side frame.
+        if have_lbrr {
+            let prev = core::mem::take(&mut self.lbrr_prev);
+            for (i, f) in prev.iter().enumerate() {
+                stereo_encode_pred(&mut *enc, &f.ix);
+                let side_lbrr_i = !f.mid_only;
+                if !side_lbrr_i {
+                    stereo_encode_mid_only(&mut *enc, 1);
+                }
+                let cond = if i == 0 { CondCoding::Independently } else { CondCoding::Conditionally };
+                self.mid.emit_frame(&mut *enc, &f.mid.0, &f.mid.1, cond, true);
+                if let Some((sind, spulses)) = &f.side {
+                    // Side cond mirrors the decoder's LBRR rule: conditional only
+                    // when the *previous* LBRR frame also coded a side channel
+                    // (side `lbrr_flags[i-1]` set), else independent.
+                    let prev_side = i > 0 && !prev[i - 1].mid_only;
+                    let side_cond = if prev_side { CondCoding::Conditionally } else { CondCoding::Independently };
+                    self.side.emit_frame(&mut *enc, sind, spulses, side_cond, true);
+                }
+            }
+        } else {
+            self.lbrr_prev.clear();
+        }
+
+        // LBRR gain increase for *this* packet's redundant copies
+        // (`silk_control_codec`): 7 when the previous packet carried no LBRR,
+        // otherwise reduced as the expected packet loss rises:
+        // max(7 - floor(perc * 0.4), 2). Applied to both channels so the
+        // captured copy is coded at the reduced rate.
+        let lbrr_gain_increases = if self.lbrr_in_previous_packet {
+            (7 - ((self.packet_loss_perc * 26214) >> 16)).max(2) // SMULWB(perc, 0.4_Q16)
+        } else {
+            7
+        };
+        self.mid.set_lbrr_gain_increases(lbrr_gain_increases);
+        self.side.set_lbrr_gain_increases(lbrr_gain_increases);
+        self.lbrr_in_previous_packet = true;
+
+        // Emit the current frames, capturing each for the next packet's LBRR.
+        // `encode_frame_capture` codes the regular frame into `enc` honouring
+        // the cumulative `max_bits` cap (hybrid) and returns the regular
+        // indices+pulses plus a reduced-rate LBRR copy. The LBRR copy (or the
+        // regular frame when the second NSQ pass is disabled) is stashed.
+        let mut current: Vec<StereoLbrrFrame> = Vec::with_capacity(n_frames);
         for (i, fd) in frames.iter().enumerate() {
             stereo_encode_pred(&mut *enc, &fd.ix);
             if fd.mid_only {
@@ -423,7 +655,10 @@ impl SilkStereoEncoder {
                 CondCoding::Conditionally
             };
             self.mid.set_bitrate(fd.rates[0]);
-            self.mid.encode_frame(&mut *enc, &fd.mid, mid_cond, max_bits);
+            let ((mid_ind, mid_pulses), mid_lbrr) =
+                self.mid.encode_frame_capture(&mut *enc, &fd.mid, mid_cond, max_bits);
+            let mid_cap = mid_lbrr.unwrap_or((mid_ind, mid_pulses));
+            let mut side_cap = None;
             if !fd.mid_only {
                 if self.prev_mid_only {
                     self.side.reset_side_prediction();
@@ -436,10 +671,19 @@ impl SilkStereoEncoder {
                     CondCoding::Conditionally
                 };
                 self.side.set_bitrate(fd.rates[1]);
-                self.side.encode_frame(&mut *enc, &fd.side, side_cond, max_bits);
+                let ((sind, spulses), side_lbrr_copy) =
+                    self.side.encode_frame_capture(&mut *enc, &fd.side, side_cond, max_bits);
+                side_cap = Some(side_lbrr_copy.unwrap_or((sind, spulses)));
             }
             self.prev_mid_only = fd.mid_only;
+            current.push(StereoLbrrFrame {
+                ix: fd.ix,
+                mid_only: fd.mid_only,
+                mid: mid_cap,
+                side: side_cap,
+            });
         }
+        self.lbrr_prev = current;
     }
 }
 
