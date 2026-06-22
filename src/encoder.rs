@@ -10,14 +10,50 @@
 //! modules; this layer chooses the TOC byte and frames a conformant Opus
 //! packet. [`OpusEncoder::encode_hybrid`] produces **hybrid** packets (SILK
 //! wideband low band + CELT high band in one shared coder, super-wideband or
-//! fullband), and [`OpusEncoder::encode_auto`] picks SILK or CELT per frame
-//! from the frame size and target bitrate.
+//! fullband), and [`OpusEncoder::encode_auto`] picks SILK / hybrid / CELT per
+//! frame from a signal analysis ([`crate::encoder_analysis`]) plus the
+//! [`Signal`] hint and [`Application`] profile, with cross-frame hysteresis and
+//! automatic bandwidth selection.
 
 use alloc::vec::Vec;
 
 use crate::celt::encoder::CeltEncoder;
+use crate::encoder_analysis::{FrameAnalysis, analyze_frame};
 use crate::packet::Bandwidth;
 use crate::range::RangeEncoder;
+
+/// Signal-content hint for the automatic mode decision (`OPUS_SET_SIGNAL`).
+///
+/// Biases [`OpusEncoder::encode_auto`]'s speech-vs-music classification: the
+/// analysis still runs, but a non-`Auto` hint shifts the decision threshold so
+/// the encoder trusts the caller's knowledge of the source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Signal {
+    /// Let the analysis decide (the default, `OPUS_AUTO`).
+    #[default]
+    Auto,
+    /// The source is speech: bias toward SILK / hybrid.
+    Voice,
+    /// The source is general audio / music: bias toward CELT.
+    Music,
+}
+
+/// Coding application / latency profile (`OPUS_SET_APPLICATION`).
+///
+/// Shapes the mode decision the way libopus's three application presets do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Application {
+    /// VoIP: optimise for speech intelligibility - bias toward SILK / hybrid
+    /// (`OPUS_APPLICATION_VOIP`).
+    Voip,
+    /// General audio / music, the balanced default
+    /// (`OPUS_APPLICATION_AUDIO`).
+    #[default]
+    Audio,
+    /// Restricted low delay: never use SILK (which adds algorithmic delay), so
+    /// every frame is coded CELT-only (`OPUS_APPLICATION_RESTRICTED_LOWDELAY`).
+    RestrictedLowDelay,
+}
 
 /// Errors returned by the [`OpusEncoder`] encode methods.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +81,18 @@ impl core::fmt::Display for EncodeError {
 
 #[cfg(feature = "std")]
 impl std::error::Error for EncodeError {}
+
+/// The mode [`OpusEncoder::encode_auto`]'s decision selects for a 10/20 ms
+/// frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChosenMode {
+    /// SILK-only (narrowband through wideband speech).
+    Silk,
+    /// Hybrid (SILK low band + CELT high band, super-wideband/fullband speech).
+    Hybrid,
+    /// CELT-only (music / low delay).
+    Celt,
+}
 
 /// The SILK low-band target bitrate for a hybrid packet at total `rate` bps:
 /// a per-channel rate table
@@ -147,6 +195,24 @@ pub struct OpusEncoder {
     /// packet; forcing 2 on a mono encoder has no effect (mono can only ever
     /// code mono). Only the 2→1 downmix changes behaviour.
     force_channels: Option<usize>,
+    /// Signal-content hint (`OPUS_SET_SIGNAL`): biases the mode decision toward
+    /// SILK (`Voice`) or CELT (`Music`); `Auto` lets the analysis decide.
+    signal: Signal,
+    /// Application / latency profile (`OPUS_SET_APPLICATION`).
+    application: Application,
+    /// Caller-imposed ceiling on the automatic bandwidth selection
+    /// (`OPUS_SET_MAX_BANDWIDTH`). Auto-selected bandwidths are clamped to this.
+    max_bandwidth: Bandwidth,
+    /// Whether the caller forced an explicit bandwidth via
+    /// [`set_bandwidth`](Self::set_bandwidth). When `false`, `encode_auto`
+    /// chooses the bandwidth from the analysis (clamped to `max_bandwidth`);
+    /// when `true`, `self.bandwidth` is honoured as-is. The default is `false`
+    /// (automatic).
+    bandwidth_forced: bool,
+    /// Smoothed music probability for mode hysteresis: the per-frame analysis
+    /// probability is low-pass filtered into this so the chosen mode does not
+    /// flip on a single borderline frame.
+    mode_music_smooth: f32,
 }
 
 impl OpusEncoder {
@@ -174,6 +240,11 @@ impl OpusEncoder {
             complexity: 10,
             vbr: true,
             force_channels: None,
+            signal: Signal::Auto,
+            application: Application::Audio,
+            max_bandwidth: Bandwidth::FullBand,
+            bandwidth_forced: false,
+            mode_music_smooth: 0.5,
         }
     }
 
@@ -195,6 +266,9 @@ impl OpusEncoder {
         self.dtx_no_activity_q1 = 0;
         self.last_toc = 0;
         self.dtx_noise_floor = 1.0;
+        // `signal`, `application`, `max_bandwidth`, `bandwidth_forced` are
+        // configuration and survive a reset; the hysteresis state is history.
+        self.mode_music_smooth = 0.5;
     }
 
     /// The configured number of channels (1 or 2).
@@ -399,11 +473,71 @@ impl OpusEncoder {
         out
     }
 
-    /// Restricts the coded audio bandwidth (`OPUS_SET_BANDWIDTH`). The CELT
-    /// modes support narrowband, wideband, super-wideband and fullband;
-    /// mediumband is treated as wideband (CELT has no 6 kHz mode).
+    /// Forces the coded audio bandwidth (`OPUS_SET_BANDWIDTH`). The CELT modes
+    /// support narrowband, wideband, super-wideband and fullband; mediumband is
+    /// treated as wideband (CELT has no 6 kHz mode).
+    ///
+    /// Calling this **pins** the bandwidth: [`encode_auto`](Self::encode_auto)
+    /// then uses exactly this value instead of choosing one from the signal.
+    /// Use [`set_auto_bandwidth`](Self::set_auto_bandwidth) to restore automatic
+    /// selection (capped by [`set_max_bandwidth`](Self::set_max_bandwidth)).
     pub const fn set_bandwidth(&mut self, bandwidth: Bandwidth) {
         self.bandwidth = bandwidth;
+        self.bandwidth_forced = true;
+    }
+
+    /// Restores automatic bandwidth selection (`OPUS_SET_BANDWIDTH` with
+    /// `OPUS_AUTO`): [`encode_auto`](Self::encode_auto) picks the bandwidth from
+    /// the signal's spectral content and the target bitrate, clamped to
+    /// [`max_bandwidth`](Self::max_bandwidth).
+    pub const fn set_auto_bandwidth(&mut self) {
+        self.bandwidth_forced = false;
+    }
+
+    /// Whether a bandwidth has been forced via
+    /// [`set_bandwidth`](Self::set_bandwidth) (vs automatic selection).
+    #[must_use]
+    pub const fn bandwidth_forced(&self) -> bool {
+        self.bandwidth_forced
+    }
+
+    /// The signal-content hint (`OPUS_GET_SIGNAL`).
+    #[must_use]
+    pub const fn signal(&self) -> Signal {
+        self.signal
+    }
+
+    /// Sets the signal-content hint (`OPUS_SET_SIGNAL`): `Voice` biases the
+    /// automatic mode decision toward SILK / hybrid, `Music` toward CELT, and
+    /// `Auto` (the default) lets the analysis decide.
+    pub const fn set_signal(&mut self, signal: Signal) {
+        self.signal = signal;
+    }
+
+    /// The coding application / latency profile (`OPUS_GET_APPLICATION`).
+    #[must_use]
+    pub const fn application(&self) -> Application {
+        self.application
+    }
+
+    /// Sets the coding application (`OPUS_SET_APPLICATION`). `RestrictedLowDelay`
+    /// forces CELT-only coding (no SILK, minimal delay); `Voip` biases toward
+    /// SILK / speech; `Audio` (the default) is the balanced general profile.
+    pub const fn set_application(&mut self, application: Application) {
+        self.application = application;
+    }
+
+    /// The ceiling on automatic bandwidth selection (`OPUS_GET_MAX_BANDWIDTH`).
+    #[must_use]
+    pub const fn max_bandwidth(&self) -> Bandwidth {
+        self.max_bandwidth
+    }
+
+    /// Caps the bandwidth the automatic selection may choose
+    /// (`OPUS_SET_MAX_BANDWIDTH`). Has no effect when a bandwidth is forced via
+    /// [`set_bandwidth`](Self::set_bandwidth).
+    pub const fn set_max_bandwidth(&mut self, bandwidth: Bandwidth) {
+        self.max_bandwidth = bandwidth;
     }
 
     /// Sets the target bitrate in bits/s (`OPUS_SET_BITRATE`). For CELT
@@ -416,12 +550,129 @@ impl OpusEncoder {
         self.target_bitrate = bitrate;
     }
 
-    /// Encodes one frame, automatically choosing SILK (speech / lower rate)
-    /// or CELT (music / higher rate). This is a simplified mode decision
-    /// (no full hysteresis): the SILK-only frame sizes 40/60 ms always
-    /// use SILK, the CELT-only sizes 2.5/5 ms always use CELT, and 10/20 ms
-    /// pick SILK (wideband-or-below) or hybrid (super-wideband/fullband) at a
-    /// modest target bitrate, otherwise CELT. `pcm` is interleaved 48 kHz f32;
+    /// Picks the auto bandwidth for a 10/20 ms frame from the analysis and the
+    /// target bitrate, clamped to [`max_bandwidth`](Self::max_bandwidth).
+    ///
+    /// The signal's detected spectral extent is the upper bound (no point
+    /// coding empty high bands), and the bitrate is a lower bound on quality:
+    /// low rates can't afford super-wideband/fullband, so we narrow them. This
+    /// mirrors libopus's rate-vs-bandwidth ladder (`opus_encoder.c`'s
+    /// `rate_thresholds`), with hysteresis-free, documented thresholds.
+    fn auto_bandwidth(&self, analysis: &FrameAnalysis) -> Bandwidth {
+        // Rate ceiling: how wide a band the bitrate can usefully fill. `None`
+        // (unset) means "use the full detected extent".
+        let rate_cap = match self.target_bitrate {
+            None => Bandwidth::FullBand,
+            Some(b) if b < 11_000 => Bandwidth::NarrowBand,
+            Some(b) if b < 14_000 => Bandwidth::MediumBand,
+            Some(b) if b < 24_000 => Bandwidth::WideBand,
+            Some(b) if b < 42_000 => Bandwidth::SuperWideBand,
+            Some(_) => Bandwidth::FullBand,
+        };
+        // The chosen bandwidth is the narrowest of: what the signal occupies,
+        // what the rate affords, and the caller's hard cap.
+        analysis
+            .detected_bandwidth
+            .min(rate_cap)
+            .min(self.max_bandwidth)
+    }
+
+    /// Chooses SILK / hybrid / CELT for a 10/20 ms frame, applying the
+    /// `application`, `signal` hint and a smoothed (hysteresis) music
+    /// probability on top of the bandwidth/bitrate backbone. Returns the chosen
+    /// mode; the caller dispatches to the matching coder.
+    ///
+    /// `bw` is the (possibly auto-selected) coded bandwidth.
+    fn decide_mode(&mut self, analysis: &FrameAnalysis, bw: Bandwidth) -> ChosenMode {
+        // Restricted-low-delay never uses SILK (which adds algorithmic delay).
+        if self.application == Application::RestrictedLowDelay {
+            return ChosenMode::Celt;
+        }
+
+        // Hysteresis: low-pass the per-frame music probability so a single
+        // borderline frame can't flip the mode. A near-silent frame carries no
+        // evidence, so we leave the smoothed value untouched.
+        if analysis.energy > 1e-7 {
+            const SMOOTH: f32 = 0.2; // ~5-frame time constant
+            self.mode_music_smooth += SMOOTH * (analysis.music_probability - self.mode_music_smooth);
+        }
+        let mut music = self.mode_music_smooth;
+
+        // The caller's signal hint and application bias the music score: a hint
+        // shifts the decision threshold rather than hard-overriding it, so the
+        // analysis still has a say on truly ambiguous content.
+        match self.signal {
+            Signal::Voice => music -= 0.35,
+            Signal::Music => music += 0.35,
+            Signal::Auto => {},
+        }
+        if self.application == Application::Voip {
+            music -= 0.2; // VoIP leans on speech coding
+        }
+        let music = music.clamp(0.0, 1.0);
+
+        // Bandwidth/bitrate backbone, unchanged from the original simplified
+        // decision, gives the *speech-side* preference (SILK ≤ WB, hybrid for
+        // SWB/FB at modest rates). Strong music evidence pulls toward CELT.
+        let wb_or_below = matches!(
+            bw,
+            Bandwidth::NarrowBand | Bandwidth::MediumBand | Bandwidth::WideBand
+        );
+        let swb_or_fb = matches!(bw, Bandwidth::SuperWideBand | Bandwidth::FullBand);
+
+        // The speech-side mode the backbone would pick for this bw/bitrate.
+        let speech_mode = if wb_or_below && self.target_bitrate.is_some_and(|b| b <= 24_000) {
+            Some(ChosenMode::Silk)
+        } else if swb_or_fb && self.target_bitrate.is_some_and(|b| b <= 40_000) {
+            Some(ChosenMode::Hybrid)
+        } else {
+            None
+        };
+
+        match speech_mode {
+            // The backbone wants a speech mode (modest-rate SILK/hybrid range):
+            // take it unless the evidence is strongly music.
+            Some(mode) => {
+                if music > 0.7 {
+                    ChosenMode::Celt
+                } else {
+                    mode
+                }
+            },
+            // The backbone defaults to CELT - high rate (> the speech-mode rate
+            // ceiling) or no target rate set. Keep CELT unless the caller has
+            // *explicitly* asked for speech (Voice hint or VoIP) and the content
+            // is clearly speech, in which case route to the bandwidth-
+            // appropriate SILK-family mode. (Auto/Audio keeps the original
+            // high-rate-is-CELT behaviour.)
+            None => {
+                let speech_requested = self.signal == Signal::Voice || self.application == Application::Voip;
+                if speech_requested && music < 0.25 {
+                    if wb_or_below {
+                        ChosenMode::Silk
+                    } else {
+                        ChosenMode::Hybrid
+                    }
+                } else {
+                    ChosenMode::Celt
+                }
+            },
+        }
+    }
+
+    /// Encodes one frame, automatically choosing SILK (speech), hybrid
+    /// (SWB/FB speech) or CELT (music / low-delay) per frame from a signal
+    /// analysis ([`crate::encoder_analysis`]) plus the
+    /// [`signal`](Self::set_signal) hint, the [`application`](Self::set_application)
+    /// profile and the target bitrate, with cross-frame hysteresis so the mode
+    /// does not flip on a single borderline frame. The CELT-only sizes
+    /// (2.5/5 ms) are always CELT; the SILK-only sizes (40/60 ms) are always
+    /// SILK; 10/20 ms is where the analysis decides.
+    ///
+    /// When no bandwidth is forced (see [`set_bandwidth`](Self::set_bandwidth) /
+    /// [`set_auto_bandwidth`](Self::set_auto_bandwidth)), the coded bandwidth is
+    /// chosen from the signal's spectral extent and the bitrate, capped by
+    /// [`max_bandwidth`](Self::max_bandwidth). `pcm` is interleaved 48 kHz f32;
     /// see [`encode`](Self::encode), [`encode_silk`](Self::encode_silk) and
     /// [`encode_hybrid`](Self::encode_hybrid) for the per-mode details.
     ///
@@ -450,27 +701,48 @@ impl OpusEncoder {
             }
         }
 
+        // Analyse the frame and, if the bandwidth is automatic, pick one. The
+        // chosen bandwidth is written into `self.bandwidth` for the duration of
+        // this call so the per-mode coders pick it up; a forced bandwidth is
+        // left untouched.
+        let analysis = analyze_frame(pcm, self.channels);
+        if !self.bandwidth_forced && matches!(per_ch, 480 | 960) {
+            self.bandwidth = self.auto_bandwidth(&analysis);
+        }
+
         let packet = match per_ch {
             120 | 240 => self.encode(pcm, max_bytes),        // 2.5/5 ms: CELT only
             1920 | 2880 => self.encode_silk(pcm, max_bytes), // 40/60 ms: SILK only
             480 | 960 => {
-                // 10/20 ms: SILK for speech up to wideband at a modest rate;
-                // hybrid for super-wideband/fullband speech rates; else CELT.
-                let wb_or_below = matches!(
-                    self.bandwidth,
-                    Bandwidth::NarrowBand | Bandwidth::MediumBand | Bandwidth::WideBand
-                );
-                let swb_or_fb = matches!(self.bandwidth, Bandwidth::SuperWideBand | Bandwidth::FullBand);
-                if wb_or_below && self.target_bitrate.is_some_and(|b| b <= 24_000) {
-                    self.encode_silk(pcm, max_bytes)
-                } else if swb_or_fb && self.target_bitrate.is_some_and(|b| b <= 40_000) {
-                    // Fall back to CELT-only for a frame whose hybrid SILK low
-                    // band cannot be squeezed under its byte share (a rare loud
-                    // transient), so the "just works" path never fails.
-                    self.encode_hybrid(pcm, max_bytes)
-                        .or_else(|_| self.encode(pcm, max_bytes))
-                } else {
-                    self.encode(pcm, max_bytes)
+                let bw = self.bandwidth;
+                match self.decide_mode(&analysis, bw) {
+                    ChosenMode::Silk => {
+                        // SILK tops out at wideband; if the analysis/rate left a
+                        // wider bandwidth, narrow to WB for the SILK coder.
+                        let wide = matches!(bw, Bandwidth::SuperWideBand | Bandwidth::FullBand);
+                        if wide && !self.bandwidth_forced {
+                            self.bandwidth = Bandwidth::WideBand;
+                        }
+                        let r = self.encode_silk(pcm, max_bytes);
+                        if wide && !self.bandwidth_forced {
+                            self.bandwidth = bw;
+                        }
+                        r
+                    },
+                    ChosenMode::Hybrid => {
+                        // Hybrid needs SWB/FB; if the chosen bandwidth is
+                        // narrower, fall back to CELT (or SILK) rather than
+                        // mis-framing. Hybrid can overrun a tight budget on a
+                        // loud transient - fall back to CELT so the path never
+                        // fails.
+                        if matches!(bw, Bandwidth::SuperWideBand | Bandwidth::FullBand) {
+                            self.encode_hybrid(pcm, max_bytes)
+                                .or_else(|_| self.encode(pcm, max_bytes))
+                        } else {
+                            self.encode(pcm, max_bytes)
+                        }
+                    },
+                    ChosenMode::Celt => self.encode(pcm, max_bytes),
                 }
             },
             _ => return Err(EncodeError::InvalidFrameSize),
@@ -1843,6 +2115,231 @@ mod tests {
             assert_eq!(p[0] & 0b100, 0b100, "stereo bit set after switch back");
             assert_eq!(sdec.decode_packet(&p).unwrap().len(), 960 * 2);
             assert_eq!(sdec.final_range(), enc.final_range(), "stereo phase frame {f}");
+        }
+    }
+
+    /// The mode of an `encode_auto` packet, derived from its TOC config
+    /// (SILK 0..12, hybrid 12..16, CELT 16+).
+    fn packet_mode(packet: &[u8]) -> char {
+        let config = packet[0] >> 3;
+        if config < 12 {
+            's'
+        } else if config < 16 {
+            'h'
+        } else {
+            'c'
+        }
+    }
+
+    /// A clearly-speech signal (a low voiced tone with formants, band-limited
+    /// to the speech range) at a modest VoIP-ish rate is coded with SILK or
+    /// hybrid (a SILK-family mode), and every packet round-trips through
+    /// `OpusDecoder` with the matching final range.
+    #[test]
+    fn analysis_routes_speech_to_silk_family() {
+        let mut enc = OpusEncoder::new(1);
+        enc.set_application(Application::Voip);
+        enc.set_bitrate(Some(20_000));
+        // Automatic bandwidth (no set_bandwidth call): the analysis picks it.
+        assert!(!enc.bandwidth_forced());
+        let mut dec = OpusDecoder::new(1);
+        let mut silk_family = 0;
+        for f in 0..12 {
+            let pcm: Vec<f32> = (0..960)
+                .map(|i| {
+                    let t = (f * 960 + i) as f32 / 48_000.0;
+                    // Voiced speech-band content: pitch + a couple of low
+                    // formants, nothing above ~2.5 kHz.
+                    0.45 * (2.0 * core::f32::consts::PI * 160.0 * t).sin()
+                        + 0.25 * (2.0 * core::f32::consts::PI * 800.0 * t).sin()
+                        + 0.12 * (2.0 * core::f32::consts::PI * 2300.0 * t).sin()
+                })
+                .collect();
+            let packet = enc.encode_auto(&pcm, 1275).expect("encode");
+            let out = dec.decode_packet(&packet).expect("decode");
+            assert_eq!(out.len(), 960);
+            assert_eq!(dec.final_range(), enc.final_range(), "range mismatch frame {f}");
+            if matches!(packet_mode(&packet), 's' | 'h') {
+                silk_family += 1;
+            }
+        }
+        // After the hysteresis settles, the steady state must be a SILK-family
+        // mode for clearly-speech input.
+        assert!(
+            silk_family >= 8,
+            "expected speech to use SILK/hybrid, only {silk_family}/12 frames did"
+        );
+    }
+
+    /// A clearly-music signal (bright, broadband content reaching into the top
+    /// octave) with the `Music` hint is coded with CELT, and every packet
+    /// round-trips through `OpusDecoder` with the matching final range.
+    #[test]
+    fn analysis_routes_music_to_celt() {
+        let mut seed = 0x9E37_79B9u32;
+        let mut enc = OpusEncoder::new(1);
+        enc.set_signal(Signal::Music);
+        enc.set_bitrate(Some(24_000)); // a rate the backbone would give SILK
+        let mut dec = OpusDecoder::new(1);
+        let mut celt = 0;
+        for f in 0..12 {
+            let pcm: Vec<f32> = (0..960)
+                .map(|i| {
+                    let t = (f * 960 + i) as f32 / 48_000.0;
+                    seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                    let n = ((seed >> 9) as f32 / f32::from(u16::MAX) - 0.5) * 0.15;
+                    // Broadband musical content: bass + mids + bright highs into
+                    // the top octave, plus a little noise.
+                    0.3 * (2.0 * core::f32::consts::PI * 220.0 * t).sin()
+                        + 0.3 * (2.0 * core::f32::consts::PI * 3500.0 * t).sin()
+                        + 0.3 * (2.0 * core::f32::consts::PI * 9500.0 * t).sin()
+                        + 0.25 * (2.0 * core::f32::consts::PI * 15000.0 * t).sin()
+                        + n
+                })
+                .collect();
+            let packet = enc.encode_auto(&pcm, 1275).expect("encode");
+            let out = dec.decode_packet(&packet).expect("decode");
+            assert_eq!(out.len(), 960);
+            assert_eq!(dec.final_range(), enc.final_range(), "range mismatch frame {f}");
+            if packet_mode(&packet) == 'c' {
+                celt += 1;
+            }
+        }
+        assert!(celt >= 8, "expected music to use CELT, only {celt}/12 frames did");
+    }
+
+    /// `RestrictedLowDelay` forces CELT-only coding: every `encode_auto` packet,
+    /// regardless of frame size / bandwidth / bitrate / signal content, carries
+    /// a CELT-only TOC config (16..=31), and round-trips through `OpusDecoder`.
+    #[test]
+    fn restricted_low_delay_is_always_celt() {
+        for &(spf, bw, br) in &[
+            (480usize, Bandwidth::WideBand, Some(16_000u32)), // would be SILK
+            (960, Bandwidth::SuperWideBand, Some(32_000)),    // would be hybrid
+            (960, Bandwidth::FullBand, Some(64_000)),         // CELT anyway
+        ] {
+            let mut enc = OpusEncoder::new(1);
+            enc.set_application(Application::RestrictedLowDelay);
+            enc.set_signal(Signal::Voice); // even with a Voice hint
+            enc.set_bandwidth(bw);
+            enc.set_bitrate(br);
+            let mut dec = OpusDecoder::new(1);
+            for f in 0..4 {
+                let pcm: Vec<f32> = (0..spf)
+                    .map(|i| {
+                        let t = (f * spf + i) as f32 / 48_000.0;
+                        0.3 * (2.0 * core::f32::consts::PI * 200.0 * t).sin()
+                    })
+                    .collect();
+                let packet = enc.encode_auto(&pcm, 1275).expect("encode");
+                let config = packet[0] >> 3;
+                assert!(
+                    config >= 16,
+                    "RestrictedLowDelay must be CELT-only, got config {config} (spf={spf})"
+                );
+                let out = dec.decode_packet(&packet).expect("decode");
+                assert_eq!(out.len(), spf);
+                assert_eq!(dec.final_range(), enc.final_range(), "range mismatch spf={spf} frame {f}");
+            }
+        }
+    }
+
+    /// Automatic bandwidth selection never exceeds the configured
+    /// `max_bandwidth`: a fullband signal capped at wideband is coded at
+    /// wideband or below, and the packets round-trip through `OpusDecoder`.
+    #[test]
+    fn auto_bandwidth_respects_max_bandwidth() {
+        // CELT TOC configs map to bandwidth: NB 16-19, WB 20-23, SWB 24-27,
+        // FB 28-31. SILK config: NB 0-3, MB 4-7, WB 8-11. We check the coded
+        // bandwidth (from the TOC) never exceeds the cap.
+        let bw_of = |packet: &[u8]| -> Bandwidth {
+            crate::packet::Toc::new(packet[0]).bandwidth()
+        };
+        for &cap in &[Bandwidth::NarrowBand, Bandwidth::WideBand, Bandwidth::SuperWideBand] {
+            let mut enc = OpusEncoder::new(1);
+            enc.set_auto_bandwidth(); // explicit: automatic selection
+            enc.set_max_bandwidth(cap);
+            enc.set_bitrate(Some(48_000));
+            assert_eq!(enc.max_bandwidth(), cap);
+            let mut dec = OpusDecoder::new(1);
+            for f in 0..6 {
+                // A fullband signal: energy up to 18 kHz. The detected
+                // bandwidth would be FB, but the cap must win.
+                let pcm: Vec<f32> = (0..960)
+                    .map(|i| {
+                        let t = (f * 960 + i) as f32 / 48_000.0;
+                        0.25 * (2.0 * core::f32::consts::PI * 300.0 * t).sin()
+                            + 0.25 * (2.0 * core::f32::consts::PI * 6000.0 * t).sin()
+                            + 0.25 * (2.0 * core::f32::consts::PI * 12000.0 * t).sin()
+                            + 0.2 * (2.0 * core::f32::consts::PI * 18000.0 * t).sin()
+                    })
+                    .collect();
+                let packet = enc.encode_auto(&pcm, 1275).expect("encode");
+                let bw = bw_of(&packet);
+                assert!(
+                    bw <= cap,
+                    "coded bandwidth {bw:?} exceeds cap {cap:?} (frame {f})"
+                );
+                let out = dec.decode_packet(&packet).expect("decode");
+                assert_eq!(out.len(), 960);
+                assert_eq!(dec.final_range(), enc.final_range(), "range mismatch cap={cap:?} frame {f}");
+            }
+        }
+    }
+
+    /// The new controls' getters mirror their setters.
+    #[test]
+    fn signal_application_bandwidth_controls_round_trip() {
+        let mut enc = OpusEncoder::new(1);
+        assert_eq!(enc.signal(), Signal::Auto);
+        assert_eq!(enc.application(), Application::Audio);
+        assert!(!enc.bandwidth_forced());
+        enc.set_signal(Signal::Voice);
+        enc.set_application(Application::RestrictedLowDelay);
+        enc.set_max_bandwidth(Bandwidth::MediumBand);
+        enc.set_bandwidth(Bandwidth::WideBand);
+        assert_eq!(enc.signal(), Signal::Voice);
+        assert_eq!(enc.application(), Application::RestrictedLowDelay);
+        assert_eq!(enc.max_bandwidth(), Bandwidth::MediumBand);
+        assert!(enc.bandwidth_forced());
+        enc.set_auto_bandwidth();
+        assert!(!enc.bandwidth_forced());
+    }
+
+    /// A long mixed stream - alternating clearly-speech and clearly-music
+    /// segments - exercises the per-frame analysis, hysteresis and mode
+    /// switching: every produced packet must round-trip through `OpusDecoder`
+    /// with the matching final range (the bit-exact oracle), whatever mode the
+    /// analysis lands on.
+    #[test]
+    fn auto_mixed_stream_every_packet_round_trips() {
+        let mut seed = 0x1357_2468u32;
+        let mut enc = OpusEncoder::new(1);
+        enc.set_auto_bandwidth();
+        enc.set_bitrate(Some(32_000));
+        let mut dec = OpusDecoder::new(1);
+        for f in 0..60 {
+            let speechy = (f / 10) % 2 == 0;
+            let pcm: Vec<f32> = (0..960)
+                .map(|i| {
+                    let t = (f * 960 + i) as f32 / 48_000.0;
+                    if speechy {
+                        0.45 * (2.0 * core::f32::consts::PI * 150.0 * t).sin()
+                            + 0.2 * (2.0 * core::f32::consts::PI * 900.0 * t).sin()
+                    } else {
+                        seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                        let n = ((seed >> 9) as f32 / f32::from(u16::MAX) - 0.5) * 0.2;
+                        0.3 * (2.0 * core::f32::consts::PI * 400.0 * t).sin()
+                            + 0.3 * (2.0 * core::f32::consts::PI * 8000.0 * t).sin()
+                            + 0.25 * (2.0 * core::f32::consts::PI * 14000.0 * t).sin()
+                            + n
+                    }
+                })
+                .collect();
+            let packet = enc.encode_auto(&pcm, 1275).expect("encode");
+            let out = dec.decode_packet(&packet).expect("decode");
+            assert_eq!(out.len(), 960);
+            assert_eq!(dec.final_range(), enc.final_range(), "range mismatch frame {f}");
         }
     }
 }

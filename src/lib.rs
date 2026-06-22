@@ -42,11 +42,13 @@ mod decoder;
 #[cfg(feature = "std")]
 mod encoder;
 #[cfg(feature = "std")]
+mod encoder_analysis;
+#[cfg(feature = "std")]
 mod multistream;
 #[cfg(feature = "std")]
 pub use decoder::{OggDecodeError, OpusDecoder, decode_ogg_opus};
 #[cfg(feature = "std")]
-pub use encoder::{EncodeError, OpusEncoder, encode_ogg_opus};
+pub use encoder::{Application, EncodeError, OpusEncoder, Signal, encode_ogg_opus};
 #[cfg(feature = "std")]
 pub use multistream::MultistreamDecoder;
 #[cfg(feature = "std")]

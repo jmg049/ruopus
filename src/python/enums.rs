@@ -105,6 +105,75 @@ impl From<Bandwidth> for crate::packet::Bandwidth {
     }
 }
 
+/// Signal-content hint for the automatic mode decision (``OPUS_SET_SIGNAL``).
+///
+/// Biases :meth:`OpusEncoder.encode_auto`'s speech-vs-music classification.
+#[pyclass(eq, eq_int, frozen, hash, from_py_object, module = "opus_native", name = "Signal")]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Signal {
+    /// Let the analysis decide (the default, ``OPUS_AUTO``).
+    Auto,
+    /// The source is speech: bias toward SILK / hybrid.
+    Voice,
+    /// The source is general audio / music: bias toward CELT.
+    Music,
+}
+
+impl From<crate::encoder::Signal> for Signal {
+    fn from(s: crate::encoder::Signal) -> Self {
+        match s {
+            crate::encoder::Signal::Auto => Signal::Auto,
+            crate::encoder::Signal::Voice => Signal::Voice,
+            crate::encoder::Signal::Music => Signal::Music,
+        }
+    }
+}
+
+impl From<Signal> for crate::encoder::Signal {
+    fn from(s: Signal) -> Self {
+        match s {
+            Signal::Auto => crate::encoder::Signal::Auto,
+            Signal::Voice => crate::encoder::Signal::Voice,
+            Signal::Music => crate::encoder::Signal::Music,
+        }
+    }
+}
+
+/// Coding application / latency profile (``OPUS_SET_APPLICATION``).
+#[pyclass(eq, eq_int, frozen, hash, from_py_object, module = "opus_native", name = "Application")]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Application {
+    /// VoIP: optimise for speech - bias toward SILK / hybrid
+    /// (``OPUS_APPLICATION_VOIP``).
+    Voip,
+    /// General audio / music, the balanced default
+    /// (``OPUS_APPLICATION_AUDIO``).
+    Audio,
+    /// Restricted low delay: never use SILK, so every frame is CELT-only
+    /// (``OPUS_APPLICATION_RESTRICTED_LOWDELAY``).
+    RestrictedLowDelay,
+}
+
+impl From<crate::encoder::Application> for Application {
+    fn from(a: crate::encoder::Application) -> Self {
+        match a {
+            crate::encoder::Application::Voip => Application::Voip,
+            crate::encoder::Application::Audio => Application::Audio,
+            crate::encoder::Application::RestrictedLowDelay => Application::RestrictedLowDelay,
+        }
+    }
+}
+
+impl From<Application> for crate::encoder::Application {
+    fn from(a: Application) -> Self {
+        match a {
+            Application::Voip => crate::encoder::Application::Voip,
+            Application::Audio => crate::encoder::Application::Audio,
+            Application::RestrictedLowDelay => crate::encoder::Application::RestrictedLowDelay,
+        }
+    }
+}
+
 /// Duration of one Opus frame (RFC 6716 §3.1, Table 2).
 #[pyclass(
     eq,

@@ -45,7 +45,7 @@ mod opus_native {
     use super::version;
 
     #[pymodule_export]
-    use super::enums::{Bandwidth, FrameSize, Mode};
+    use super::enums::{Application, Bandwidth, FrameSize, Mode, Signal};
 
     #[pymodule_export]
     use super::errors::{EncodeError, OggError, OpusError, PacketError};

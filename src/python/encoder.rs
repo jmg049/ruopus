@@ -5,7 +5,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
-use super::enums::Bandwidth;
+use super::enums::{Application, Bandwidth, Signal};
 use super::numpy_io::borrow_interleaved_f32;
 
 /// An Opus encoder for a single stream at 48 kHz.
@@ -13,8 +13,9 @@ use super::numpy_io::borrow_interleaved_f32;
 /// Encodes one frame of interleaved 48 kHz ``float32`` PCM (a 1-D interleaved
 /// array, or a 2-D ``(frames, channels)`` array) into an Opus packet returned
 /// as ``bytes``. Configuration is exposed as properties (:attr:`complexity`,
-/// :attr:`bitrate`, :attr:`dtx`, :attr:`bandwidth`); the encoder is stateful,
-/// so feed it consecutive frames from one stream.
+/// :attr:`bitrate`, :attr:`dtx`, :attr:`bandwidth`, :attr:`signal`,
+/// :attr:`application`, :attr:`max_bandwidth`); the encoder is stateful, so
+/// feed it consecutive frames from one stream.
 ///
 /// Parameters
 /// ----------
@@ -45,8 +46,12 @@ pub struct OpusEncoder {
     bitrate: Option<u32>,
     dtx: bool,
     bandwidth: Bandwidth,
+    bandwidth_forced: bool,
     vbr: bool,
     force_channels: Option<usize>,
+    signal: Signal,
+    application: Application,
+    max_bandwidth: Bandwidth,
 }
 
 impl OpusEncoder {
@@ -66,8 +71,28 @@ impl OpusEncoder {
 #[pymethods]
 impl OpusEncoder {
     #[new]
-    #[pyo3(signature = (channels, *, complexity = 10, bitrate = None, dtx = false, bandwidth = Bandwidth::FullBand))]
-    fn new(channels: usize, complexity: u8, bitrate: Option<u32>, dtx: bool, bandwidth: Bandwidth) -> PyResult<Self> {
+    #[pyo3(signature = (
+        channels,
+        *,
+        complexity = 10,
+        bitrate = None,
+        dtx = false,
+        bandwidth = Bandwidth::FullBand,
+        signal = Signal::Auto,
+        application = Application::Audio,
+        max_bandwidth = Bandwidth::FullBand,
+    ))]
+    #[allow(clippy::too_many_arguments, reason = "mirrors the Opus encoder control surface")]
+    fn new(
+        channels: usize,
+        complexity: u8,
+        bitrate: Option<u32>,
+        dtx: bool,
+        bandwidth: Bandwidth,
+        signal: Signal,
+        application: Application,
+        max_bandwidth: Bandwidth,
+    ) -> PyResult<Self> {
         if channels != 1 && channels != 2 {
             return Err(PyValueError::new_err("channels must be 1 or 2"));
         }
@@ -75,6 +100,9 @@ impl OpusEncoder {
         inner.set_complexity(complexity);
         inner.set_bitrate(bitrate);
         inner.set_dtx(dtx);
+        inner.set_signal(signal.into());
+        inner.set_application(application.into());
+        inner.set_max_bandwidth(max_bandwidth.into());
         inner.set_bandwidth(bandwidth.into());
         Ok(Self {
             inner,
@@ -83,8 +111,12 @@ impl OpusEncoder {
             bitrate,
             dtx,
             bandwidth,
+            bandwidth_forced: true,
             vbr: true,
             force_channels: None,
+            signal,
+            application,
+            max_bandwidth,
         })
     }
 
@@ -147,7 +179,10 @@ impl OpusEncoder {
         self.vbr = vbr;
     }
 
-    /// Coded audio bandwidth (``OPUS_SET_BANDWIDTH``).
+    /// Forced coded audio bandwidth (``OPUS_SET_BANDWIDTH``). Setting this pins
+    /// the bandwidth so :meth:`encode_auto` uses it instead of choosing one
+    /// from the signal; call :meth:`set_auto_bandwidth` to restore automatic
+    /// selection.
     #[getter]
     fn get_bandwidth(&self) -> Bandwidth {
         self.bandwidth
@@ -157,6 +192,63 @@ impl OpusEncoder {
     fn set_bandwidth(&mut self, bandwidth: Bandwidth) {
         self.inner.set_bandwidth(bandwidth.into());
         self.bandwidth = bandwidth;
+        self.bandwidth_forced = true;
+    }
+
+    /// Restore automatic bandwidth selection (``OPUS_SET_BANDWIDTH`` with
+    /// ``OPUS_AUTO``): :meth:`encode_auto` picks the bandwidth from the signal's
+    /// spectral content and the bitrate, capped by :attr:`max_bandwidth`.
+    fn set_auto_bandwidth(&mut self) {
+        self.inner.set_auto_bandwidth();
+        self.bandwidth_forced = false;
+    }
+
+    /// Whether a bandwidth has been forced (vs automatic selection).
+    #[getter]
+    fn get_bandwidth_forced(&self) -> bool {
+        self.bandwidth_forced
+    }
+
+    /// Signal-content hint (``OPUS_SET_SIGNAL``): :attr:`Signal.Voice` biases
+    /// the automatic mode decision toward SILK / hybrid, :attr:`Signal.Music`
+    /// toward CELT, and :attr:`Signal.Auto` (default) lets the analysis decide.
+    #[getter]
+    fn get_signal(&self) -> Signal {
+        self.signal
+    }
+
+    #[setter]
+    fn set_signal(&mut self, signal: Signal) {
+        self.inner.set_signal(signal.into());
+        self.signal = signal;
+    }
+
+    /// Coding application / latency profile (``OPUS_SET_APPLICATION``).
+    /// :attr:`Application.RestrictedLowDelay` forces CELT-only coding;
+    /// :attr:`Application.Voip` biases toward speech; :attr:`Application.Audio`
+    /// (default) is the balanced general profile.
+    #[getter]
+    fn get_application(&self) -> Application {
+        self.application
+    }
+
+    #[setter]
+    fn set_application(&mut self, application: Application) {
+        self.inner.set_application(application.into());
+        self.application = application;
+    }
+
+    /// Ceiling on automatic bandwidth selection (``OPUS_SET_MAX_BANDWIDTH``).
+    /// Has no effect while a bandwidth is forced via :attr:`bandwidth`.
+    #[getter]
+    fn get_max_bandwidth(&self) -> Bandwidth {
+        self.max_bandwidth
+    }
+
+    #[setter]
+    fn set_max_bandwidth(&mut self, bandwidth: Bandwidth) {
+        self.inner.set_max_bandwidth(bandwidth.into());
+        self.max_bandwidth = bandwidth;
     }
 
     /// Force the coded channel count (``OPUS_SET_FORCE_CHANNELS``).
@@ -219,8 +311,11 @@ impl OpusEncoder {
 
     /// Encode one frame, automatically choosing SILK, hybrid, or CELT.
     ///
-    /// A simplified mode decision based on frame size, bandwidth, and target
-    /// bitrate (not libopus's full hysteresis).
+    /// The mode is chosen per frame from a signal analysis (speech-vs-music and
+    /// spectral extent) together with the :attr:`signal` hint, the
+    /// :attr:`application` profile and the target bitrate, with cross-frame
+    /// hysteresis. When no bandwidth is forced, the coded bandwidth is selected
+    /// automatically and capped by :attr:`max_bandwidth`.
     ///
     /// Parameters
     /// ----------
