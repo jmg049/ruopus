@@ -533,3 +533,85 @@ unsafe fn dot_f64_sse2(x: &[f32], y: &[f32]) -> f64 {
         s
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    extern crate alloc;
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    fn seq(n: usize, off: usize) -> Vec<f32> {
+        (0..n).map(|i| (((i + off) * 7 % 19) as f32 / 19.0) - 0.5).collect()
+    }
+    fn ref_dot(x: &[f32], y: &[f32]) -> f64 {
+        x.iter().zip(y).map(|(&a, &b)| f64::from(a) * f64::from(b)).sum()
+    }
+    fn close(got: f64, want: f64, tag: &str) {
+        assert!((got - want).abs() <= 1e-3 + want.abs() * 1e-4, "{tag}: {got} vs {want}");
+    }
+
+    /// Sizes that straddle the SSE2 (4) and AVX2 (8/16) lane widths, so every
+    /// kernel runs both its vector body and its scalar tail. Under Miri this is
+    /// the soundness check for unsafe site #2 (the `simd.rs` dot/FIR/convert
+    /// kernels): each load/store must stay within the asserted slice bounds.
+    const SIZES: [usize; 16] = [0, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32, 33, 48];
+
+    #[test]
+    fn dot_dual_f64_match_reference() {
+        for &n in &SIZES {
+            // `y` is longer than `x` to exercise the `y.len() >= x.len()` contract.
+            let x = seq(n, 0);
+            let y = seq(n + 3, 5);
+            let y2 = seq(n + 3, 11);
+            let want = ref_dot(&x, &y);
+            close(f64::from(dot(&x, &y)), want, "dot");
+            close(dot_f64(&x, &y), want, "dot_f64");
+            let (a, b) = dual_dot(&x, &y, &y2);
+            close(f64::from(a), want, "dual.0");
+            close(f64::from(b), ref_dot(&x, &y2), "dual.1");
+        }
+    }
+
+    #[test]
+    fn pitch_xcorr_matches_reference() {
+        for &len in &[1usize, 3, 4, 7, 8, 9, 16, 17, 32] {
+            for &max in &[1usize, 4, 5, 8] {
+                let x = seq(len, 0);
+                let y = seq(max + len, 3); // y.len() = max+len ≥ out.len()+len-1
+                let mut out = vec![0.0f32; max];
+                pitch_xcorr(&x, &y, &mut out, len);
+                for (i, &o) in out.iter().enumerate() {
+                    close(f64::from(o), ref_dot(&x, &y[i..i + len]), "xcorr");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fir6_matches_reference() {
+        let c = [0.2f32, -0.1, 0.3, 0.05, -0.25, 0.15];
+        for &m in &[1usize, 3, 4, 7, 8, 9, 16, 17, 32] {
+            let inp = seq(m + 5, 2);
+            let mut out = vec![0.0f32; m];
+            fir6(&mut out, &inp, c);
+            for (j, &o) in out.iter().enumerate() {
+                let want: f64 = (0..6).map(|k| f64::from(inp[j + k]) * f64::from(c[k])).sum();
+                close(f64::from(o), want, "fir6");
+            }
+        }
+    }
+
+    #[test]
+    fn scale_round_matches_f32_round_exactly() {
+        for &n in &SIZES {
+            let x = seq(n, 4);
+            let mut out = vec![0i16; n];
+            scale_round_to_i16(&mut out, &x, 32768.0);
+            for (i, &o) in out.iter().enumerate() {
+                let want = (x[i] * 32768.0).round().clamp(-32768.0, 32767.0) as i16;
+                assert_eq!(o, want, "scale_round n={n} i={i}");
+            }
+        }
+    }
+}

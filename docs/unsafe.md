@@ -42,3 +42,36 @@ passes on either path, so the approximation changes nothing observable.
 3. If the instruction set is not part of the target's baseline (e.g. AVX2),
    gate the call on `is_x86_feature_detected!` and keep a scalar fallback.
 4. Add a row to the table above.
+5. Add a focused soundness test that drives the new kernel directly over
+   boundary-straddling sizes (so Miri can check it - see below), and make sure
+   `tools/miri.sh` reaches it.
+
+## Verifying soundness with Miri
+
+Every `unsafe` block above is checked under [Miri](https://github.com/rust-lang/miri),
+Rust's interpreter for detecting undefined behaviour (out-of-bounds accesses,
+misalignment, invalid values, aliasing violations). Miri *executes* the SSE2
+and AVX2 intrinsics, so it validates the actual vector loads and stores in each
+kernel - not a scalar stand-in.
+
+```
+rustup +nightly component add miri   # one-time
+tools/miri.sh
+```
+
+The runner exercises every unsafe site twice - once on the x86-64 baseline
+(SSE2, which runs unconditionally) and once with `-C target-feature=+avx2,+fma`
+so the AVX2 paths are taken too - through these focused tests:
+
+| Test | Covers |
+|------|--------|
+| `simd::tests::*` | site #2 (`dot`/`dual_dot`/`dot_f64`/`pitch_xcorr`/`fir6`/`scale_round_to_i16`) and site #1 (`op_pvq_search` SSE2 + AVX2 kernels) |
+| `celt::mdct::tests::*` | site #3 (forward-MDCT pre-rotation) |
+
+Each test sweeps band/vector lengths that straddle the 4-lane (SSE2) and 8-lane
+(AVX2) widths - including the padded-tail cases - and checks the result against
+a scalar reference, so Miri sees the full range of in-bounds and remainder
+accesses. The full encode/decode round-trips are **not** run under Miri (the
+interpreter is far too slow for them); their large-scale correctness is covered
+by the native test suite and the conformance vectors, while these kernel tests
+isolate exactly the memory-safety-critical `unsafe` code.

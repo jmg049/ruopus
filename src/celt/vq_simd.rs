@@ -376,3 +376,56 @@ unsafe fn op_pvq_search_sse2(input: &[f32], iy_out: &mut [i32], k: usize) -> f32
         yy
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    extern crate alloc;
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    /// A deterministic, non-trivial band of `n` samples.
+    fn band(n: usize) -> Vec<f32> {
+        (0..n).map(|i| ((i * 7 + 3) % 13) as f32 / 13.0 - 0.5).collect()
+    }
+
+    /// Exercises both SIMD pulse-search kernels across a sweep of band widths
+    /// that straddle the SSE2 (4-lane) and AVX2 (8-lane) boundaries - including
+    /// the padded-tail cases - and asserts the PVQ invariant (`Σ|iy| == k`).
+    ///
+    /// Under Miri this is the soundness check for unsafe site #1: every load and
+    /// store in the kernels (over the `cap`-padded local buffers) must stay in
+    /// bounds, and the padding lanes must never win a pulse. It is deliberately
+    /// small so it completes quickly in the interpreter.
+    #[test]
+    #[allow(unsafe_code, reason = "calls the SIMD kernels directly to validate them under Miri")]
+    fn pvq_search_kernels_place_k_pulses_in_bounds() {
+        for &n in &[2usize, 3, 4, 5, 7, 8, 9, 11, 15, 16, 17, 23, 24, 25] {
+            for &k in &[1usize, 2, 5, n.saturating_sub(1).max(1), n + 3] {
+                let x = band(n);
+
+                // The public dispatcher (whichever kernel this CPU/Miri selects).
+                let mut iy = vec![0i32; n];
+                let _ = op_pvq_search(&x, &mut iy, k);
+                let sum: i32 = iy.iter().map(|v| v.abs()).sum();
+                assert_eq!(sum, k as i32, "dispatch: n={n} k={k} sum|iy|={sum}");
+
+                // The SSE2 kernel directly (always valid on x86-64).
+                let mut iy_sse = vec![0i32; n];
+                // SAFETY: SSE2 is part of the x86-64 baseline ABI; `iy_sse` is `n` long.
+                let _ = unsafe { op_pvq_search_sse2(&x, &mut iy_sse, k) };
+                let sum_sse: i32 = iy_sse.iter().map(|v| v.abs()).sum();
+                assert_eq!(sum_sse, k as i32, "sse2: n={n} k={k}");
+
+                // The AVX2 kernel directly, when this target/Miri reports it.
+                if std::is_x86_feature_detected!("avx2") {
+                    let mut iy_avx = vec![0i32; n];
+                    // SAFETY: AVX2 confirmed available; `iy_avx` is `n` long.
+                    let _ = unsafe { op_pvq_search_avx2(&x, &mut iy_avx, k) };
+                    let sum_avx: i32 = iy_avx.iter().map(|v| v.abs()).sum();
+                    assert_eq!(sum_avx, k as i32, "avx2: n={n} k={k}");
+                }
+            }
+        }
+    }
+}
