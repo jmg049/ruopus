@@ -9,3 +9,14 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 *.egg-info/
+
+*.aux
+*.bbl
+*.blg
+*.bcf
+*.log
+*.out
+*.run.xml
+*.toc
+manual/build
+*.lock

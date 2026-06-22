@@ -30,7 +30,10 @@ classifiers = [
     "Typing :: Typed",
 ]
 dynamic = ["version"]
-dependencies = ["numpy>=1.22"]
+dependencies = [
+    "maturin>=1.14.1",
+    "numpy>=1.22",
+]
 
 [project.urls]
 "Homepage" = "https://github.com/jmg049/opus_native"

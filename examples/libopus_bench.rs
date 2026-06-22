@@ -49,12 +49,19 @@ fn main() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(4000);
+    // Mode selection: LIBOPUS_MODE = silk (default) | hybrid | celt.
+    let mode = std::env::var("LIBOPUS_MODE").unwrap_or_else(|_| "silk".into());
+    let (bw, br, app) = match mode.as_str() {
+        "hybrid" => (Bandwidth::Fullband, 32_000, Application::Voip),
+        "celt" => (Bandwidth::Fullband, 64_000, Application::Audio),
+        _ => (Bandwidth::Wideband, 16_000, Application::Voip),
+    };
     let sig = signal();
     let frames: Vec<&[f32]> = sig.chunks_exact(FRAME).collect();
 
-    let mut e = opus::Encoder::new(FS as u32, Channels::Mono, Application::Voip).unwrap();
-    e.set_bitrate(Bitrate::Bits(16_000)).unwrap();
-    e.set_bandwidth(Bandwidth::Wideband).unwrap();
+    let mut e = opus::Encoder::new(FS as u32, Channels::Mono, app).unwrap();
+    e.set_bitrate(Bitrate::Bits(br)).unwrap();
+    e.set_bandwidth(bw).unwrap();
     e.set_vbr(true).unwrap();
     e.set_complexity(complexity).unwrap();
 

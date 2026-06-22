@@ -708,7 +708,8 @@ and declines to duplicate that information.
   container. The cost is that the codec cannot be handed a bare byte stream and
   asked to find packet boundaries; it must be told, per packet, how many bytes
   belong to it. The one exception is the \termdef{self-delimiting} framing used
-  inside multistream packets (\cref{sec:multistream}), where several Opus packets
+  inside multistream packets (\cref{sec:multistream}), where several
+  Opus packets
   are concatenated and all but the last must announce their own length.
 \end{concept}
 
@@ -756,7 +757,8 @@ its TOC (\cref{sec:opus_layer}).
   \centering
   \begin{tabular}{llll}
     \toprule
-    \textbf{Config} & \textbf{Mode} & \textbf{Bandwidth} & \textbf{Frame sizes (ms)} \\
+    \textbf{Config} & \textbf{Mode} & \textbf{Bandwidth} &
+    \textbf{Frame sizes (ms)} \\
     \midrule
     0--3   & SILK-only & narrowband (NB)      & 10, 20, 40, 60 \\
     4--7   & SILK-only & mediumband (MB)      & 10, 20, 40, 60 \\
@@ -770,7 +772,8 @@ its TOC (\cref{sec:opus_layer}).
     \bottomrule
   \end{tabular}
   \caption{The 32 TOC configurations (\S3.1, Table 2). The mode dictates which
-  coder runs; the bandwidth caps the highest coded frequency; the frame size is
+    coder runs; the bandwidth caps the highest coded frequency; the
+    frame size is
   always expressed at the 48~kHz reference.}
   \label{tab:configs}
 \end{table}
@@ -858,11 +861,16 @@ unboundedly. The implementation maps each rule to a typed error
     \midrule
     R1 & packet is at least one byte (has a TOC)       & \code{Empty} \\
     R2 & every frame is at most 1275 bytes             & \code{FrameTooLarge} \\
-    R3 & code 1 payload length is even                 & \code{Code1UnevenPayload} \\
-    R4 & coded frame lengths are not truncated         & \code{InvalidFrameLength} \\
-    R5 & code 3 count $M\ge 1$ and total $\le$ 120~ms  & \code{InvalidFrameCount} \\
-    R6 & padding does not exceed the payload           & \code{InvalidPadding} \\
-    R7 & frame lengths do not overrun the payload      & \code{InvalidFrameLength} \\
+    R3 & code 1 payload length is even                 &
+    \code{Code1UnevenPayload} \\
+    R4 & coded frame lengths are not truncated         &
+    \code{InvalidFrameLength} \\
+    R5 & code 3 count $M\ge 1$ and total $\le$ 120~ms  &
+    \code{InvalidFrameCount} \\
+    R6 & padding does not exceed the payload           &
+    \code{InvalidPadding} \\
+    R7 & frame lengths do not overrun the payload      &
+    \code{InvalidFrameLength} \\
     \bottomrule
   \end{tabular}
   \caption{The malformed-packet rules [R1]--[R7] (\S3.4) and their errors.}
@@ -887,7 +895,8 @@ CELT, the Constrained-Energy Lapped Transform (\S4.3), is the music half of
 Opus. It is a transform codec: it maps blocks of audio into the frequency domain
 with a Modified Discrete Cosine Transform, then spends bits on the resulting
 coefficients according to a psychoacoustic budget. Its distinguishing feature,
-the one its name advertises, is that it codes the \emph{energy} of each frequency
+the one its name advertises, is that it codes the \emph{energy} of
+each frequency
 band explicitly and separately from the band's \emph{shape}, which keeps the
 reconstructed spectrum's energy envelope faithful even when bits are scarce.
 
@@ -915,14 +924,16 @@ producing exactly $N$ coefficients for every $N$ new input samples.
   The MDCT maps $2N$ real input samples to $N$ real coefficients:
   \begin{equation}\label{eq:mdct}
     X[k] = \sum_{n=0}^{2N-1} x[n]\,
-      \cos\!\left[\frac{\pi}{N}\left(n + \tfrac{1}{2} + \tfrac{N}{2}\right)
-                  \left(k + \tfrac{1}{2}\right)\right],
+    \cos\!\left[\frac{\pi}{N}\left(n + \tfrac{1}{2} + \tfrac{N}{2}\right)
+    \left(k + \tfrac{1}{2}\right)\right],
     \quad k = 0,\dots,N-1.
   \end{equation}
   The inverse (IMDCT) produces $2N$ samples from the $N$ coefficients. Because
   the forward transform discards half its inputs' worth of degrees of freedom,
-  a single IMDCT cannot recover its input; the missing information is supplied by
-  the \emph{overlapping} neighbor block. Each output block overlaps its successor
+  a single IMDCT cannot recover its input; the missing information is
+  supplied by
+  the \emph{overlapping} neighbor block. Each output block overlaps
+  its successor
   by $N$ samples, and the two contributions are added. This is
   \termdef{time-domain aliasing cancellation} (TDAC): the IMDCT of one block
   contains a time-reversed alias of the input, and the overlapping block's alias
@@ -944,12 +955,13 @@ CELT uses the \termdef{Vorbis window}, a power-complementary window built from a
 sine of a sine:
 \begin{equation}\label{eq:vorbis_window}
   w[n] = \sin\!\left[\frac{\pi}{2}\,
-    \sin^2\!\left(\frac{\pi}{2L}\left(n + \tfrac{1}{2}\right)\right)\right],
+  \sin^2\!\left(\frac{\pi}{2L}\left(n + \tfrac{1}{2}\right)\right)\right],
   \quad n = 0,\dots,L-1,
 \end{equation}
 where $L$ is the overlap length. CELT does not window the full block: only the
 first and last $L$ samples are tapered (with $L = 120$ at 48~kHz), and the
-interior is passed through unwindowed. This \termdef{low-overlap} design trades a
+interior is passed through unwindowed. This \termdef{low-overlap}
+design trades a
 little frequency selectivity for substantially reduced algorithmic delay, which
 is what lets Opus reach 5~ms latency in CELT mode.
 
@@ -980,7 +992,8 @@ smears a sharp transient (a drum hit, a consonant) backward in time as
 \termdef{pre-echo}: quantization noise spread across the whole block becomes
 audible before the attack that produced it. CELT's defense is to switch, for
 transient frames, from one long MDCT to a series of $B$ short MDCTs (with $B =
-2, 4, 8$), each covering a fraction of the frame. The encoder signals this choice
+2, 4, 8$), each covering a fraction of the frame. The encoder signals
+this choice
 with a transient flag (\cref{subsec:celt_encoder}); the short transforms'
 coefficients are then interleaved so the band structure still applies. Time
 resolution improves by a factor of $B$ at the cost of frequency resolution,
@@ -989,11 +1002,13 @@ exactly the uncertainty trade-off, applied adaptively per frame.
 \subsubsection{Computing the MDCT through an FFT}
 
 Evaluated directly, \cref{eq:mdct} costs $O(N^2)$. In practice the MDCT
-factors into three stages: a complex \emph{pre-rotation} that folds the $2N$ real
+factors into three stages: a complex \emph{pre-rotation} that folds
+the $2N$ real
 inputs into $N/4$ complex values, an $N/4$-point complex FFT, and a complex
 \emph{post-rotation} that unpacks the result. The FFT dominates the cost and is
 isolated behind a seam in the implementation: the default build routes it
-through an external planned-FFT backend, while a dependency-free build falls back
+through an external planned-FFT backend, while a dependency-free
+build falls back
 to a direct $O(N^2)$ evaluation. The numerical and performance consequences of
 this seam are treated in \cref{sec:optimizations}; here it suffices that the
 transform is an $O(N\log N)$ operation in the production configuration.
@@ -1002,7 +1017,8 @@ transform is an $O(N\log N)$ operation in the production configuration.
 
 CELT divides the MDCT spectrum into 21 \termdef{bands} whose widths follow the
 ear's critical bands: narrow at low frequencies where the ear resolves pitch
-finely, wide at high frequencies where it does not~\cite{zwicker1999psychoacoustics}.
+finely, wide at high frequencies where it does
+not~\cite{zwicker1999psychoacoustics}.
 For each band, CELT codes two things separately: the band's \emph{energy} (the
 $L^2$ norm of its coefficients) and its \emph{shape} (the unit-norm direction).
 This separation is the ``Constrained-Energy'' in the codec's name.
@@ -1012,9 +1028,12 @@ This separation is the ``Constrained-Energy'' in the codec's name.
   contains, not by the precise arrangement of coefficients within it. By coding
   the energy envelope explicitly and protecting it with its own bits, CELT
   guarantees that the reconstructed signal has the right spectral balance even
-  when the shape is coded coarsely. A codec that quantized raw coefficients would
-  instead let energy drift as bits run short, producing audible spectral tilt and
-  ``birdie'' artifacts. The cost of the guarantee is the overhead of the envelope
+  when the shape is coded coarsely. A codec that quantized raw
+  coefficients would
+  instead let energy drift as bits run short, producing audible
+  spectral tilt and
+  ``birdie'' artifacts. The cost of the guarantee is the overhead of
+  the envelope
   itself, which CELT minimizes with aggressive prediction.
 \end{concept}
 
@@ -1083,9 +1102,10 @@ energy.
   $K$:
   \begin{equation}\label{eq:pvq_codebook}
     S(N, K) = \left\{\mathbf{y} \in \mathbb{Z}^N :
-      \sum_{i=0}^{N-1} \abs{y_i} = K\right\}.
+    \sum_{i=0}^{N-1} \abs{y_i} = K\right\}.
   \end{equation}
-  Geometrically these are the lattice points on the surface of an $N$-dimensional
+  Geometrically these are the lattice points on the surface of an
+  $N$-dimensional
   $L^1$ ball, the ``pyramid.'' A band's shape is coded by finding the codeword
   $\mathbf{y}$ closest in direction to the unit shape, then transmitting which
   codeword it is. On decode, $\mathbf{y}$ is read back and normalized to unit
@@ -1104,7 +1124,7 @@ the candidate $\mathbf{y}$ and the target shape $\mathbf{x}$. After each pulse,
 the quantity maximized is
 \begin{equation}\label{eq:pvq_search}
   j^\star = \argmax_j \frac{(\mathbf{x}\cdot\mathbf{y} + x_j)^2}
-                           {\norm{\mathbf{y}}^2 + 2y_j + 1},
+  {\norm{\mathbf{y}}^2 + 2y_j + 1},
 \end{equation}
 the squared cosine similarity that would result from adding a pulse at position
 $j$. The algorithm starts from a projection of $\mathbf{x}$ onto the pyramid to
@@ -1114,7 +1134,8 @@ the subject of a dedicated SIMD kernel (\cref{subsec:simd_pvq}).
 
 \subsection{CWRS: Enumerating the Codebook}\label{subsec:cwrs}
 
-The PVQ search yields a codeword $\mathbf{y}$; the coder must transmit \emph{which}
+The PVQ search yields a codeword $\mathbf{y}$; the coder must
+transmit \emph{which}
 of the $V(N,K) = \abs{S(N,K)}$ codewords it is, as a uniform integer in
 $[0, V(N,K))$. This is the \termdef{combinatorial} step: a bijection between
 pulse vectors and indices, known in the Opus sources as CWRS (coding with
@@ -1164,7 +1185,8 @@ fn pvq_u_data() -> &'static [u32] {
 \end{lstlisting}
 
 The decoder reads the uniform index from the range coder, unranks it to recover
-$\mathbf{y}$ through the table, and normalizes. Because the index is uniform over
+$\mathbf{y}$ through the table, and normalizes. Because the index is
+uniform over
 exactly $V(N,K)$ values, no bits are wasted: the shape costs precisely
 $\log_2 V(N,K)$ bits, which is what the allocator budgeted for.
 
@@ -1223,7 +1245,8 @@ searches the cache for the largest $K$ whose codeword fits the budget, and
 $K$. Surplus bits left after the split, the \emph{balance}, are carried forward
 to subsequent bands so nothing is wasted. The allocation also decides, from the
 budget, the boundary band for intensity stereo and whether to use dual stereo
-(\cref{subsec:celt_bands}), and it may explicitly \emph{skip} high bands when the
+(\cref{subsec:celt_bands}), and it may explicitly \emph{skip} high
+bands when the
 budget cannot support them, coding the skip decisions as run-length flags.
 
 \subsection{Band Coding: Splits, Folding, and Stereo}\label{subsec:celt_bands}
@@ -1237,10 +1260,12 @@ transient artifacts, and stereo coupling.
 
 \subsubsection{Recursive splitting by angle}
 
-When a band is split in two, the energy is divided between the halves by an angle
+When a band is split in two, the energy is divided between the halves
+by an angle
 $\theta$: the lower half receives $\cos\theta$ of the amplitude and the upper
 $\sin\theta$. Quantizing $\theta$ (rather than two independent energies) keeps
-the total band energy exactly fixed, preserving the energy constraint through the
+the total band energy exactly fixed, preserving the energy constraint
+through the
 recursion. The number of quantization levels for $\theta$ depends on the band's
 bit allocation, and the angle is coded with one of three probability models
 chosen by context (\S4.3.4.1): a \emph{uniform} PDF for ordinary time splits, a
@@ -1298,9 +1323,11 @@ efficiently. Three sub-modes apply, chosen per band by the allocation:
   \item \textbf{Mid/side with angle:} a stereo angle $\theta$ apportions energy
     between mid and side, coded like the mono split above.
   \item \textbf{Intensity stereo:} above a boundary band set by the budget, only
-    the mid is coded and the side is reconstructed by copying the mid, discarding
+    the mid is coded and the side is reconstructed by copying the
+    mid, discarding
     stereo detail where it is least audible (at high frequencies, low bitrates).
-  \item \textbf{Dual stereo:} the two channels are coded fully independently, used
+  \item \textbf{Dual stereo:} the two channels are coded fully
+    independently, used
     when the channels are sufficiently decorrelated to justify the bits.
 \end{itemize}
 A special case handles bands of $N=2$, where a single angle suffices to code the
@@ -1323,7 +1350,8 @@ parameters, and those decisions, not the bitstream format, are where encoders
 differ in quality. CELT's encoder runs several analyses per frame.
 
 \textbf{Transient detection.} The encoder decides whether to use short blocks by
-running the input through a high-pass filter and then forward and backward energy
+running the input through a high-pass filter and then forward and
+backward energy
 followers; a sharp rise in the high-passed energy relative to its smoothed
 envelope marks a transient. The high-pass is a second-order section, and its
 output drives the masking metric:
@@ -1340,7 +1368,8 @@ for (t, &x) in tmp.iter_mut().zip(input.iter()) {
 }
 \end{lstlisting}
 
-\textbf{Time-frequency analysis.} For the bands, the encoder chooses time-versus-
+\textbf{Time-frequency analysis.} For the bands, the encoder chooses
+time-versus-
 frequency resolution by an $L^1$-metric minimization solved with a small Viterbi
 search (\code{tf\_analysis} and \code{tf\_select}), trading the cost of changing
 resolution against the coding gain it yields band by band.
@@ -1349,7 +1378,8 @@ resolution against the coding gain it yields band by band.
 spreading amount (\cref{subsec:celt_bands}): tonal frames get little or no
 spreading, noisy frames get aggressive spreading.
 
-\textbf{Dynamic allocation and trim.} Two analyses shape the allocation before it
+\textbf{Dynamic allocation and trim.} Two analyses shape the
+allocation before it
 runs. \termdef{Dynamic allocation} (\code{dynalloc\_analysis}) computes per-band
 importance boosts from a masking model, steering extra bits to perceptually
 important bands. The \termdef{allocation trim} (\code{alloc\_trim\_analysis})
@@ -1357,7 +1387,8 @@ sets a single global parameter that tilts the budget toward low or high
 frequencies based on spectral tilt and transientness.
 
 \textbf{The pitch pre-filter.} Before the MDCT, the encoder optionally applies a
-comb \termdef{pre-filter} that whitens the signal's harmonic structure, the exact
+comb \termdef{pre-filter} that whitens the signal's harmonic
+structure, the exact
 inverse of the comb post-filter the decoder applies after synthesis. Whitening
 the harmonics concentrates energy and improves coding efficiency on strongly
 tonal material. The pitch period and gain that parameterize the filter come from
@@ -1371,17 +1402,21 @@ SILK (\S4.2) is the speech half of Opus. Where CELT works in the frequency
 domain on arbitrary signals, SILK works in the time domain on a \emph{model} of
 how speech is produced, and codes only what the model fails to predict. This
 model-based approach is what lets SILK code intelligible speech at a few
-kilobits per second, far below what a general transform coder achieves. SILK runs
-at one of three internal rates (8, 12, or 16~kHz, for narrowband, mediumband, and
+kilobits per second, far below what a general transform coder
+achieves. SILK runs
+at one of three internal rates (8, 12, or 16~kHz, for narrowband,
+  mediumband, and
 wideband), in frames of 10, 20, 40, or 60~ms divided into 2 or 4 subframes.
 
 This section develops the model bottom-up: the source-filter idea
 (\cref{subsec:silk_model}), the short-term predictor and how it is estimated and
 represented (\cref{subsec:silk_lpc,subsec:silk_nlsf}), the long-term predictor
 that captures pitch (\cref{subsec:silk_ltp}), the gains and excitation coding
-(\cref{subsec:silk_gains,subsec:silk_excitation}), the noise-shaping quantizer at
+(\cref{subsec:silk_gains,subsec:silk_excitation}), the noise-shaping
+quantizer at
 the encoder's heart (\cref{subsec:silk_nsq}), and the supporting machinery of
-stereo, resampling, and control (\cref{subsec:silk_stereo,subsec:silk_resampler,subsec:silk_control}).
+stereo, resampling, and control
+(\cref{subsec:silk_stereo,subsec:silk_resampler,subsec:silk_control}).
 
 \subsection{The Source-Filter Model}\label{subsec:silk_model}
 
@@ -1403,7 +1438,8 @@ stereo, resampling, and control (\cref{subsec:silk_stereo,subsec:silk_resampler,
   under the speech spectrum.
 \end{concept}
 
-The frame is the unit at which SILK transmits its model; the subframe is the unit
+The frame is the unit at which SILK transmits its model; the subframe
+is the unit
 at which the model is applied. Each frame carries one set of short-term filter
 coefficients (interpolated across subframes for 20~ms frames), and per-subframe
 gains and pitch parameters. The decoder reconstructs each frame by running the
@@ -1437,7 +1473,8 @@ signal. Two classical methods apply. \termdef{Levinson-Durbin}
 recursion~\cite{levinson1947wiener} solves the normal equations relating the
 filter coefficients to the signal's autocorrelation, in $O(p^2)$ time, producing
 the minimum mean-square prediction error. \termdef{Burg's
-method}~\cite{burg1975maximum} instead estimates reflection coefficients directly
+method}~\cite{burg1975maximum} instead estimates reflection
+coefficients directly
 from the signal by minimizing the sum of forward and backward prediction errors,
 which behaves better on the short analysis windows speech coding uses. The SILK
 encoder uses a modified Burg method, and caps the resulting filter's prediction
@@ -1491,7 +1528,8 @@ signal explode. SILK transmits the filter in a different representation, the
   properties that make it ideal for coding. First, stability is trivially
   checked and enforced: as long as the LSFs stay ordered, the reconstructed
   filter is stable. Second, the LSFs are localized in frequency, so each one
-  affects the spectrum mainly near its own frequency, and a quantization error in
+  affects the spectrum mainly near its own frequency, and a
+  quantization error in
   one LSF stays local rather than corrupting the whole spectrum. Third, they
   interpolate gracefully, so SILK can transmit one set per frame and interpolate
   across subframes. SILK uses \termdef{normalized} LSFs (NLSFs), scaled so the
@@ -1504,9 +1542,11 @@ NLSFs are coded with a two-stage vector quantizer (\S4.2.7.5). The first stage
 selects one of 32 codebook vectors that approximates the whole NLSF vector,
 coded with an entropy model. The second stage codes the per-coefficient residual
 between the true NLSFs and the first-stage approximation, using a predictive
-scheme (each residual partly predicted from the previous) and an arithmetic-coded
+scheme (each residual partly predicted from the previous) and an
+arithmetic-coded
 index. The residual quantization is weighted by \termdef{Laroia
-weights}~\cite{laroia1991robust}, which approximate each coefficient's perceptual
+weights}~\cite{laroia1991robust}, which approximate each
+coefficient's perceptual
 sensitivity (inversely related to its spacing from its neighbors), so bits are
 spent where the ear notices. The encoder searches this quantizer with a delayed-
 decision trellis, keeping several candidate paths alive to find a low-rate,
@@ -1531,7 +1571,8 @@ while lpc_inverse_pred_gain(&a_q12[..d]) == 0 && i < MAX_LPC_STABILIZE_ITERATION
 }
 \end{lstlisting}
 
-For 20~ms frames, the decoder interpolates between the previous frame's NLSFs and
+For 20~ms frames, the decoder interpolates between the previous
+frame's NLSFs and
 the current frame's, using a 2-bit interpolation factor, so the filter evolves
 smoothly across the frame's first and second halves rather than jumping at the
 midpoint.
@@ -1540,7 +1581,8 @@ midpoint.
 
 Short-term prediction removes the spectral envelope, but the residual of voiced
 speech is still strongly periodic at the pitch period: the vocal folds produce a
-pulse train, and successive pitch periods resemble one another. SILK removes this
+pulse train, and successive pitch periods resemble one another. SILK
+removes this
 redundancy with a second predictor, the \termdef{long-term predictor} (LTP),
 which predicts the current residual from the residual one pitch period earlier.
 
@@ -1552,7 +1594,8 @@ which predicts the current residual from the residual one pitch period earlier.
   \end{equation}
   The five taps $b_j$ let the predictor track a pitch period that does not fall
   exactly on a sample boundary and that changes shape slowly from period to
-  period. What remains after long-term prediction, the doubly-predicted residual,
+  period. What remains after long-term prediction, the
+  doubly-predicted residual,
   is the sparse excitation that SILK actually codes. The pitch lag $T$ and the
   taps $b_j$ are themselves transmitted: the lag as a per-frame absolute value
   plus per-subframe offsets from a contour codebook, and the taps as an index
@@ -1572,9 +1615,11 @@ for (k, out) in pitch_lags.iter_mut().enumerate().take(nb_subfr) {
 
 The five-tap gains come from one of three codebooks of 8, 16, or 32 vectors,
 selected by a per-frame \emph{periodicity index} that trades codebook size
-against the bits to address it: highly periodic speech justifies the larger, more
+against the bits to address it: highly periodic speech justifies the
+larger, more
 precise codebook. The encoder chooses the lag with a three-stage pitch search
-(\cref{subsec:silk_control}) and the gains with a rate-distortion-weighted vector
+(\cref{subsec:silk_control}) and the gains with a
+rate-distortion-weighted vector
 quantizer.
 
 \subsection{Subframe Gains}\label{subsec:silk_gains}
@@ -1615,9 +1660,11 @@ rather than each sample independently.
   that total down a binary tree: the 16-sample count divides into two 8-sample
   counts, each into two 4-sample counts, and so on down to individual samples.
   At each node only the \emph{split} is coded, that is, how the parent's pulse
-  count divides between its two children, using a probability model conditioned on
+  count divides between its two children, using a probability model
+  conditioned on
   the parent count. This is efficient because the total pulse count already
-  constrains the splits: a block with two pulses has far fewer ways to distribute
+  constrains the splits: a block with two pulses has far fewer ways
+  to distribute
   them than a block with ten, and the conditional models capture exactly that.
   Pulse magnitudes beyond what the tree codes directly are sent as additional
   least-significant-bit planes, and each non-zero sample's sign is coded
@@ -1658,15 +1705,18 @@ speech.
   enough to mask it~\cite{rabiner1978digital}. The NSQ achieves this by running
   the quantization inside a feedback loop: the error from past samples is
   filtered by a \termdef{noise-shaping filter} and fed back into the current
-  prediction, so the quantizer is steered to make errors whose spectrum matches a
-  perceptual target. Because the loop reconstructs exactly the signal the decoder
+  prediction, so the quantizer is steered to make errors whose
+  spectrum matches a
+  perceptual target. Because the loop reconstructs exactly the signal
+  the decoder
   will produce, the encoder always knows the true reconstruction state, which is
   what allows the per-sample decisions to be optimal rather than open-loop.
 \end{concept}
 
 For each sample the NSQ forms the short-term and long-term predictions, adds the
 shaping feedback, quantizes the result by a rate-distortion rule (minimizing
-$\abs{\text{error}} + \lambda \cdot \text{bits}$, where $\lambda$ comes from the
+  $\abs{\text{error}} + \lambda \cdot \text{bits}$, where $\lambda$
+  comes from the
 target coding quality), emits the excitation value, and updates its filter
 states. The prediction and feedback dot products are computed in fixed point,
 bit-identically to the reference, so the encoder's reconstruction matches the
@@ -1687,7 +1737,8 @@ shaping analysis}. It examines the speech and produces four shaping controls: an
 auto-regressive (AR) filter derived from the LPC envelope and bandwidth-expanded
 to set the overall noise shape; a spectral \termdef{tilt} that emphasizes or de-
 emphasizes low frequencies; a low-frequency shaper; and, for voiced frames, a
-\termdef{harmonic shaper} that shapes noise around the pitch harmonics. These are
+\termdef{harmonic shaper} that shapes noise around the pitch
+harmonics. These are
 driven by the target SNR and the voice-activity analysis so that the noise
 follows the masking threshold as the signal changes.
 
@@ -1695,7 +1746,8 @@ follows the masking threshold as the signal changes.
 
 Stereo SILK codes a mid channel (the average of left and right) and a predicted
 side channel (their difference), because the side is usually well predicted from
-the mid and so costs few bits. The encoder estimates per-frame prediction weights
+the mid and so costs few bits. The encoder estimates per-frame
+prediction weights
 that reconstruct the side from a three-tap smoothed mid plus a one-tap lagged
 mid; the weights are quantized, coded, and interpolated over the frame's first
 8~ms to avoid discontinuities. When the side is sufficiently predictable, a
@@ -1718,7 +1770,8 @@ SILK runs at 8, 12, or 16~kHz internally, but the caller asks for 8, 12, 16, 24,
 or 48~kHz output, so the decoder ends with a resampling stage (\S4.2.8). The
 method depends on the ratio: equal rates pass through, a factor-of-two change
 uses a cascade of second-order allpass sections (cheaper and lower-delay than a
-long FIR for exact 2$\times$), and other ratios combine the 2$\times$ allpass with
+long FIR for exact 2$\times$), and other ratios combine the 2$\times$
+allpass with
 a fractional-delay FIR interpolation. The encoder's front-end runs the inverse,
 decimating 48~kHz input down to the internal rate; its half-band and 2/3-band
 decimators are pinned bit-exactly against the reference, since the resampled
@@ -1738,7 +1791,8 @@ the pitch threshold, so that the codec spends its effort where there is speech.
 \textbf{Pitch analysis.} The pitch lag is found by a three-stage search of
 increasing precision: a coarse cross-correlation at 4~kHz proposes candidate
 lags, a refinement at 8~kHz searches a small contour codebook around them, and a
-final search at the internal rate locks in the per-subframe lags. The search also
+final search at the internal rate locks in the per-subframe lags. The
+search also
 classifies the frame as voiced or unvoiced, which selects whether the long-term
 predictor is used at all.
 
@@ -1746,18 +1800,21 @@ predictor is used at all.
 through per-bandwidth tables, with an adjustment for the shorter 10~ms frames.
 The coding SNR then sets the rate-distortion trade-off $\lambda$ in the NSQ and
 the aggressiveness of the noise shaping. When a coded frame would exceed a hard
-byte budget, the gains are scaled coarser and the frame re-encoded until it fits,
+byte budget, the gains are scaled coarser and the frame re-encoded
+until it fits,
 which is how SILK honors a bitrate cap and how the hybrid mode keeps room for
 CELT's high band (\cref{subsec:hybrid}).
 
 \subsection{Packet-Loss Concealment in SILK}\label{subsec:silk_plc}
 
-When a SILK frame is lost, the decoder conceals it by extrapolating the last good
+When a SILK frame is lost, the decoder conceals it by extrapolating
+the last good
 frame's model: it continues the pitch excitation with progressively stronger
 attenuation, drifts the pitch lag, and fades toward the spectral envelope of the
 preceding frames, mixing in comfort noise estimated from the recent signal. The
 attenuation and pitch-drift constants are tuned so a short loss is inaudible and
-a long one decays gracefully to silence rather than repeating a buzz. This is the
+a long one decays gracefully to silence rather than repeating a buzz.
+This is the
 SILK-specific counterpart to the general concealment logic in
 \cref{subsec:plc}.
 
@@ -1844,11 +1901,14 @@ resets at the boundary, and an optional \termdef{redundancy} frame.
   A redundancy frame is a short (5~ms) CELT frame embedded in a SILK or hybrid
   packet, used to fill the gap during a mode switch. When switching from CELT to
   SILK, the redundant CELT frame covers the start of the SILK packet, which has
-  no valid CELT history; when switching from SILK to CELT, it covers the end. The
+  no valid CELT history; when switching from SILK to CELT, it covers
+  the end. The
   decoder cross-fades between the redundant frame and the primary decode over a
-  2.5~ms overlap using a squared Vorbis window, so the energy sums to unity across
+  2.5~ms overlap using a squared Vorbis window, so the energy sums to
+  unity across
   the splice and no discontinuity is heard. The presence and direction of
-  redundancy are coded with a few bits at the boundary of the SILK and CELT data.
+  redundancy are coded with a few bits at the boundary of the SILK
+  and CELT data.
 \end{concept}
 
 The crossfade is the same power-complementary mix used throughout Opus, applied
@@ -1901,7 +1961,8 @@ budgets only when packet loss is expected.
 During silence there is nothing to code, and continuing to send full frames
 wastes bandwidth. \termdef{Discontinuous transmission} (DTX) lets the encoder
 stop sending audio frames during inactivity, emitting only occasional one-byte
-TOC packets that the decoder conceals as comfort noise. The decision is driven by
+TOC packets that the decoder conceals as comfort noise. The decision
+is driven by
 an activity detector that tracks the background noise floor, so DTX engages
 during genuine pauses even when there is audible ambient noise, not only during
 digital silence:
@@ -1925,10 +1986,456 @@ full coding the moment activity returns.
 The encoder's top level chooses a mode per frame from the frame size and target
 bitrate. Short frames (2.5 and 5~ms) can only be CELT; long frames (40 and
 60~ms) can only be SILK; the 10 and 20~ms sizes admit all three, and the choice
-falls to SILK for low-bitrate speech bandwidths, hybrid for the higher bandwidths
+falls to SILK for low-bitrate speech bandwidths, hybrid for the
+higher bandwidths
 at moderate rates, and CELT otherwise. Ahead of every mode, the input passes
 through a 3~Hz one-pole high-pass that removes DC and sub-audible rumble before
 coding, with its state carried across frames so the filter does not restart each
 frame.
+
+\section{Ogg Encapsulation}\label{sec:ogg}
+
+The packet layer (\cref{sec:packet}) deliberately stores no length, assuming a
+container provides framing. For stored files, that container is Ogg
+(RFC 3533~\cite{rfc3533}), with an Opus-specific mapping (RFC
+7845~\cite{rfc7845})
+that defines the headers and timing. This section covers how Opus packets are
+written to and read from an \texttt{.opus} file: the page structure, the
+checksum, packet reassembly, the two mandatory headers, and the granule timing
+that synchronizes audio to a clock.
+
+\subsection{Pages and Lacing}\label{subsec:ogg_pages}
+
+Ogg's transport unit is the \termdef{page}, not the packet. A page is a
+self-contained, checksummed run of bytes that begins with the four-byte capture
+pattern \code{OggS} and carries a header (flags, a granule position,
+  the stream's
+serial number, a page sequence number, and a CRC) followed by a \termdef{segment
+table} and the segment data.
+
+\begin{concept}{Lacing: Packets into Segments}
+  A page does not store packet lengths directly. Instead its body is
+  divided into
+  \termdef{segments} of up to 255 bytes, and the segment table lists each
+  segment's length as one byte. A packet is encoded as a sequence of 255-byte
+  segments followed by one final segment of length less than 255, so a segment
+  value below 255 marks the end of a packet and a value of exactly 255 means the
+  packet continues into the next segment. A packet whose length is an exact
+  multiple of 255 therefore ends with a zero-length segment, which is how the
+  reader distinguishes ``the packet happened to fill the last segment'' from
+  ``the packet continues.'' Because a page holds at most 255 segments, a packet
+  too long for one page spills into the next, with a continuation
+  flag marking the
+  follow-on page.
+\end{concept}
+
+\subsection{The Ogg CRC}\label{subsec:ogg_crc}
+
+Every page carries a 32-bit CRC over its entire contents (with the CRC field
+itself zeroed during computation), so a reader can detect corruption and a
+mistaken sync to a false \code{OggS} pattern. The polynomial is the standard
+$0\texttt{x}04\text{C}11\text{DB}7$, but, unusually, Ogg uses the
+\emph{non-reflected} variant with zero initial value and no final inversion,
+which differs from the more common reflected CRC-32 of zlib or Ethernet.
+
+\begin{lstlisting}[language=Rust]
+const POLY: u32 = 0x04C1_1DB7;        // non-reflected, zero init, no final XOR
+
+pub(crate) const fn update(mut crc: u32, data: &[u8]) -> u32 {
+    let mut i = 0;
+    while i < data.len() {
+        crc = (crc << 8) ^ TABLE[((crc >> 24) as u8 ^ data[i]) as usize];
+        i += 1;
+    }
+    crc
+}
+\end{lstlisting}
+
+When a page fails its CRC, the reader does not give up: it scans forward for the
+next \code{OggS} capture pattern and resynchronizes, so a single corrupt page
+costs only its own audio, not the rest of the stream.
+
+\subsection{Packet Reassembly}\label{subsec:ogg_reassembly}
+
+Reading Opus packets from an Ogg file is the inverse of lacing: walk
+the pages of
+the chosen logical stream (matched by serial number), concatenate segments until
+a terminator (a segment under 255 bytes) completes a packet, and carry a partial
+packet across a page boundary when the page ends mid-packet. The reader tracks
+the page sequence number to detect gaps, and discards a buffered partial packet
+if continuity breaks, so a lost page cannot fuse two unrelated packets:
+
+\begin{lstlisting}[language=Rust]
+// A page ends mid-packet (last lacing == 255) -> buffer the partial; otherwise
+// the accumulated bytes complete a packet. A sequence gap drops the partial.
+if !consecutive || page.continued != self.have_partial {
+    self.partial.clear();
+    self.have_partial = false;
+}
+\end{lstlisting}
+
+A defensive cap bounds the size of a reassembled packet, so hostile input cannot
+drive unbounded allocation; a packet that exceeds it is dropped rather than
+buffered.
+
+\subsection{OpusHead and OpusTags}\label{subsec:ogg_headers}
+
+An Ogg Opus stream begins with two mandatory header packets, each alone on its
+own page. The first, \termdef{OpusHead}, is the identification
+header: it carries
+the version, the channel count, the \termdef{pre-skip} (\cref{subsec:granule}),
+the original input sample rate (informational only, since decoding is always at
+48~kHz internally), an output gain, and the channel mapping family that
+determines whether the stream is mono/stereo or multichannel surround
+(\cref{sec:multistream}). The second, \termdef{OpusTags}, is the comment header:
+a vendor string and a list of \code{TAG=value} metadata entries, in the same
+format as Vorbis comments.
+
+\begin{lstlisting}[language=Rust]
+pub struct OpusHead {
+    pub version: u8,                    // 1
+    pub channel_count: u8,
+    pub pre_skip: u16,                  // 48 kHz samples to discard at startup
+    pub input_sample_rate: u32,         // informational
+    pub output_gain_q8: i16,            // Q7.8 dB, applied by the player
+    pub channel_mapping: ChannelMapping,
+}
+\end{lstlisting}
+
+\subsection{Granule Positions and Timing}\label{subsec:granule}
+
+Ogg pages carry a \termdef{granule position}, a per-codec timestamp. For Opus it
+counts samples at 48~kHz, the same reference clock used everywhere in the codec
+(\cref{subsec:internal_rate}). The granule position of a page is the
+total number
+of decoded samples available after decoding every packet that
+\emph{completes} on
+that page, which lets a player seek and compute durations precisely.
+
+\begin{concept}{Pre-Skip and End-Trim}
+  Two timing offsets account for the codec's own latency. The encoder's filters
+  (the SILK resampler, the CELT overlap) introduce a fixed delay, so the first
+  decoded samples are startup transient rather than real audio. \termdef{Pre-
+  skip}, stored in OpusHead, tells the player how many leading 48~kHz samples to
+  discard so the output aligns with the original input. At the other end, the
+  final page's granule position can fall short of the samples the last packet
+  actually produces, signaling \termdef{end-trim}: the player discards the
+  trailing samples beyond the granule position. Together these let an Opus file
+  represent an audio signal of \emph{any} sample count exactly, even though the
+  codec only produces audio in fixed-size frames. The reader resolves per-packet
+  positions by walking backward from a page's granule position, subtracting each
+  packet's duration (read from its TOC), so every packet gets a precise
+  timestamp.
+\end{concept}
+
+The implementation provides both directions: a reader that parses headers,
+reassembles packets, and resolves their granule positions, and a writer that
+emits the two header pages, then audio pages with correctly computed granule
+positions and a final end-of-stream page. The round trip is interoperable with
+the reference tools: files written by the implementation decode in
+ffmpeg/libopus at the correct duration, and files those tools produce decode
+here.
+
+\section{Multistream and Surround}\label{sec:multistream}
+
+Opus codes mono or stereo. Surround content (5.1, 7.1, ambisonics) is
+handled not
+by extending the codec but by running several Opus streams in parallel and
+multiplexing them into one packet, the \termdef{multistream} format
+(RFC 7845~\cite{rfc7845} \S5.1.1). This keeps the core codec simple: it never
+needs to know about more than two channels.
+
+\subsection{Streams and Coupling}\label{subsec:ms_streams}
+
+A multistream packet contains $N$ Opus streams. The first $M$ of them are
+\termdef{coupled} (stereo, carrying two channels each) and the remaining $N-M$
+are \termdef{uncoupled} (mono), so the streams together carry $2M + (N-M) = M+N$
+decoded channels. A channel mapping table then routes those decoded channels to
+the output layout.
+
+\begin{concept}{Coupled and Uncoupled Streams}
+  Pairing channels into a coupled (stereo) stream lets Opus exploit the
+  correlation between them, exactly the mid/side coding of
+  \cref{subsec:silk_stereo,subsec:celt_bands}, which is more efficient than
+  coding two channels independently. Channels that are largely independent (a
+  surround channel and the front left, say) are better coded as separate mono
+  streams. An encoder partitions the output channels into coupled pairs and mono
+  singletons, records that partition as the stream count $N$ and coupled count
+  $M$, and stores a \termdef{channel mapping}: one entry per output channel
+  giving which decoded channel feeds it, or a sentinel meaning silence. A
+  5.1 layout, for instance, might use three coupled streams and no mono streams,
+  with the mapping assigning the six decoded channels to front, center/LFE, and
+  surround positions.
+\end{concept}
+
+\subsection{Demultiplexing}\label{subsec:ms_demux}
+
+The streams are concatenated in one packet, which raises the framing problem the
+core format avoided: the decoder must find where each stream's bytes end. Here
+the \termdef{self-delimiting} framing from \cref{subsec:self_delimit} earns its
+place. Every stream except the last is written self-delimited,
+announcing its own
+length, so the demultiplexer can parse them in order; the last stream is parsed
+normally and consumes the remainder. Each stream is then decoded by its own Opus
+decoder, and the results are scattered into the output according to the mapping:
+
+\begin{lstlisting}[language=Rust]
+for s in 0..streams {
+    let packet = if s != streams - 1 {
+        let (packet, used) = Packet::parse_self_delimited(rest)?;   // knows its length
+        rest = &rest[used..];
+        packet
+    } else {
+        Packet::parse(rest)?                                        // takes the rest
+    };
+    stream_pcm.push(self.decoders[s].decode_parsed(&packet));
+}
+// Route decoded channels to output channels (255 == silence).
+for (ch, &m) in self.mapping.iter().enumerate() {
+    if m == 255 { continue; }
+    /* copy decoded channel m into output channel ch */
+}
+\end{lstlisting}
+
+All streams in a packet must decode to the same number of samples, which the
+demultiplexer enforces; a mismatch is rejected as malformed. The channel mapping
+family in OpusHead (\cref{subsec:ogg_headers}) selects the convention: family 0
+is plain mono/stereo, and the higher families define the surround channel orders
+and the stream/coupling counts.
+
+\section{Computational Optimizations}\label{sec:optimizations}
+
+The preceding sections describe what Opus computes. This section describes how
+the implementation makes those computations fast enough for real-time use,
+decoding at hundreds of times realtime on one core, and encoding faster than the
+reference at its default complexity. The optimizations fall into two groups:
+those that are free because they change only encoder \emph{decisions}, and those
+that preserve the bitstream exactly. Understanding which is which requires
+returning to the asymmetry introduced in \cref{subsec:bits_overview}.
+
+\subsection{The Licence to Approximate}\label{subsec:licence}
+
+\begin{concept}{Why the Encoder May Approximate but the Decoder May Not}
+  The Opus bitstream is defined by the sequence of range-coder symbols
+  (\cref{sec:rangecoder}), not by the floating-point values an
+  encoder computed to
+  choose them. Any \emph{valid} choice the decoder can follow produces a legal
+  stream. This splits the codec's arithmetic into two regimes with different
+  rules. The decoder, and every encoder computation that feeds a coded symbol
+  whose exact value the decoder recomputes (the bit allocation, the energy
+  prediction, the NSQ reconstruction), must be \emph{bit-exact}: a single
+  diverging bit desynchronizes the range coder. But an encoder computation that
+  only \emph{informs a decision}, such as which pitch lag looks best or which
+  pulse vector maximizes correlation, may use any approximation that lands on a
+  valid answer, because the decoder never recomputes it; it just follows the
+  symbols that result. Every SIMD kernel below lives in the second regime, which
+  is why fast, approximate arithmetic is provably harmless there.
+\end{concept}
+
+This is also why the implementation can keep \code{unsafe} confined to a handful
+of SIMD kernels. The crate denies \code{unsafe} by default; each kernel opts in
+explicitly with a documented safety justification, and each sits on
+the encoder's
+decision path where the range coder, not the kernel's exact output, defines the
+bitstream. Every round-trip and conformance test passes whether the SIMD path or
+the scalar fallback runs.
+
+\subsection{SIMD Dot Products}\label{subsec:simd_dot}
+
+The dominant cost of encoding is correlation: the pitch analyses in
+both SILK and
+CELT, the LPC whitening filters, and the NSQ prediction all reduce to dot
+products over long buffers. The implementation provides vectorized dot products
+with runtime CPU-feature detection, dispatching to an AVX2+FMA kernel when
+available, an SSE2 kernel as the x86-64 baseline, and a scalar fallback
+elsewhere:
+
+\begin{lstlisting}[language=Rust]
+pub(crate) fn dot(x: &[f32], y: &[f32]) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: both slices expose >= x.len() contiguous f32s; the kernels read
+    // only those lanes (vector loads masked to width, with a scalar tail).
+    unsafe { if has_avx2() { dot_avx2(x, y) } else { dot_sse2(x, y) } }
+    #[cfg(not(target_arch = "x86_64"))]
+    dot_scalar(x, y)
+}
+\end{lstlisting}
+
+The feature detection is cached in an atomic so the check runs once,
+not per call.
+One subtlety bridges the two regimes of \cref{subsec:licence}: SILK's pitch
+decisions are pinned against the reference, so the helper that feeds them
+accumulates in an \code{f64} even though it operates on \code{f32} data, keeping
+the SIMD result within the reference's tolerance. The CELT pitch
+correlations and
+the encoder's other analyses feed pure decisions and tolerate FMA's fused
+rounding freely.
+
+\subsection{The SIMD PVQ Search}\label{subsec:simd_pvq}
+
+The pulse search of \cref{eq:pvq_search} is the hottest loop in CELT
+encoding: for
+each of $K$ pulses, it scans all $N$ positions for the one maximizing a
+correlation ratio. The implementation vectorizes this with SSE2 and
+AVX2 kernels,
+and it is the clearest illustration of the licence to approximate.
+
+\begin{concept}{Two Tricks: Reciprocal Square Roots and Sentinel Lanes}
+  The correlation ratio of \cref{eq:pvq_search} needs a division by
+  $\norm{\mathbf{y}}$, computed across lanes with the hardware
+  \termdef{reciprocal square root} instruction, a fast 12-bit approximation
+  rather than an exact divide. This can occasionally pick a different position
+  than the scalar search would, but the result is always a \emph{valid} pulse
+  vector, so it round-trips exactly through the decoder; only the
+  encoder's choice
+  shifts, never the bitstream's legality. The second trick handles the vector
+  tail: the work buffers are padded to a whole number of SIMD lanes, and the
+  padding lanes are filled with sentinel values (a very negative numerator and a
+  very large denominator) that can never win the argmax. This lets every
+  iteration process a full vector with no remainder branch and no bounds check,
+  while guaranteeing a padding lane is never selected.
+\end{concept}
+
+The work buffers are thread-local and reused across bands and frames, so the
+search allocates nothing in steady state. This pattern, reusing scratch buffers
+rather than allocating per call, recurs across the hot paths: the PVQ
+buffers, the
+MDCT scratch, and the FFT plans are all cached per thread.
+
+\subsection{The MDCT Pre-Rotation}\label{subsec:simd_mdct}
+
+The MDCT's pre-rotation (\cref{subsec:mdct}) folds the real input into complex
+values by a per-element complex multiply against precomputed twiddle factors.
+Storing the twiddles in \termdef{folded} interleaved form (real and imaginary
+parts adjacent) lets an SSE2 kernel deinterleave four complex
+elements, multiply,
+and reinterleave in a few instructions, replacing a scalar
+complex-multiply loop.
+Because the MDCT runs on the synthesis path as well, this kernel's
+correctness is
+guarded by the same TDAC perfect-reconstruction test that validates
+the transform
+itself (\cref{subsec:mdct}).
+
+\subsection{The FFT Backend Seam}\label{subsec:fft_seam}
+
+The largest single decode speedup comes not from a kernel but from a seam. The
+MDCT's inner FFT (\cref{subsec:mdct}) is isolated behind a function
+boundary with
+two implementations selected at build time.
+
+\begin{concept}{Two FFT Backends Behind One Interface}
+  The dependency-free build evaluates the FFT directly, an $O(N^2)$ computation
+  that keeps the crate free of dependencies for embedded and minimal-footprint
+  targets. The default build instead routes the FFT through an external
+  planned-FFT backend, an $O(N\log N)$ implementation, yielding
+  roughly a tenfold
+  decode speedup on the conformance vectors. The seam matters because the two
+  backends produce subtly different floating-point results, and the codec's
+  conformance criterion is PCM \emph{quality}, not bit-exact PCM
+  (\cref{sec:numerical}): both backends pass, differing only in
+  rounding far below
+  the audibility threshold. Isolating the FFT this way lets the
+  implementation be
+  fast by default and dependency-free by choice, without forking the codec.
+\end{concept}
+
+\subsection{Table-Driven Enumeration and Buffer Reuse}\label{subsec:tables}
+
+Two further optimizations are algorithmic rather than architectural. The CWRS
+enumeration (\cref{subsec:cwrs}) replaces the $O(NK)$ recurrence with $O(N)$
+lookups into a precomputed table built once on first use, which is significant
+because band decoding calls it on every band of every frame. And throughout the
+hot paths, per-call heap allocation is eliminated by reusing
+thread-local scratch
+buffers: the band-encode work vectors, the MDCT complex scratch, and the cached
+FFT plans all persist across calls, so steady-state coding does no allocation at
+all. Combined with the \code{no\_std}-compatible core, this keeps the codec's
+memory behavior predictable enough for real-time and embedded use.
+
+\section{Numerical Considerations and Conformance}\label{sec:numerical}
+
+Opus is specified with unusual precision about arithmetic, because much of it
+must be reproduced exactly across implementations while the rest is deliberately
+left free. This final section explains where bit-exactness is required, how
+fixed-point and floating-point arithmetic divide the codec, and how an
+implementation proves itself correct against the official conformance suite.
+
+\subsection{Fixed-Point and Floating-Point}\label{subsec:fixed_float}
+
+\begin{concept}{Q-Format Fixed-Point Arithmetic}
+  A \termdef{\Q{n}} value stores a real number $x$ as the integer
+  $\round{x \cdot 2^n}$, so the fraction lives in the low $n$ bits. Addition is
+  ordinary integer addition; multiplying a \Q{a} value by a \Q{b} value gives a
+  \Q{(a+b)} product that is shifted right to renormalize. Fixed-point arithmetic
+  is exactly reproducible on every machine, with no dependence on a
+  floating-point
+  unit's rounding modes, which is why the normative parts of the
+  codec use it. The
+  cost is constant vigilance about scaling and overflow: the implementation
+  matches the reference's wrapping integer semantics precisely, using explicit
+  wrapping operations where the reference relies on machine wraparound, so that
+  intermediate sums agree to the bit.
+\end{concept}
+
+The two coders make different choices. SILK is specified in fixed point, and the
+implementation follows suit: its NLSF conversion, gain dequantization, LTP
+filters, and NSQ run in \Q{}-format integers pinned bit-exactly against the
+compiled reference, so SILK reconstructs sample-identical PCM. CELT's reference
+exists in both fixed-point and floating-point forms, and RFC 6716 explicitly
+permits a floating-point decoder; the implementation uses float for CELT, which
+makes its PCM output differ from a fixed-point decoder by rounding far below
+audibility, while its range-coder arithmetic remains exact.
+
+\subsection{What Must Be Exact}\label{subsec:what_exact}
+
+The dividing line follows the range coder. Anything that produces or consumes a
+coded symbol must be bit-exact, because the symbols are the bitstream and the
+range coder desynchronizes on any divergence. Anything downstream of the last
+symbol, the final PCM samples after the inverse transform and resampling, need
+only be perceptually correct.
+
+\begin{importantnote}
+  The single invariant that captures ``bit-exact'' is the final-range oracle of
+  \cref{subsec:oracle}: after decoding a packet, the range coder's \code{rng}
+  must equal the reference encoder's, exactly. This holds even for the
+  floating-point CELT decoder, because the float arithmetic only affects the PCM
+  \emph{after} the last symbol is decoded; every symbol along the way is decoded
+  with identical integer range-coder arithmetic. An implementation can therefore
+  use float for speed in the transform and still prove, packet by
+  packet, that it
+  decoded exactly the same bitstream the reference encoded.
+\end{importantnote}
+
+\subsection{The Conformance Criterion}\label{subsec:conformance}
+
+RFC 6716 ships a suite of test vectors and a comparison tool,
+\texttt{opus\_compare}, that scores a decoder's PCM output against the reference
+on a perceptually weighted metric. An implementation conforms if it passes this
+quality bar on every vector; bit-exact PCM is \emph{not} required, precisely
+because the standard permits floating-point decoders whose output differs in
+rounding.
+
+The implementation discussed here passes the official criterion: all twelve
+vectors score in the 99.2--100\% quality range, well above the passing bar, with
+per-packet final ranges bit-exact across the whole suite. The combination is
+strong evidence of correctness: the final-range equality proves the entropy
+decode is exact symbol-for-symbol, and the quality score proves the signal
+reconstruction is perceptually faithful. For the CELT-only vectors, the
+synthesized PCM additionally scores 83--104~dB SNR against the reference float
+decode, far beyond what the quality metric demands.
+
+\begin{concept}{Two Checks, Two Purposes}
+  The two conformance measures answer different questions. The
+  \textbf{final-range oracle} answers ``did I decode the same bitstream?'', a
+  binary, unforgiving check on the entropy coder and everything that feeds it; a
+  single wrong symbol fails it. The \textbf{\texttt{opus\_compare} quality
+  score} answers ``does the audio sound right?'', a graded check on the signal
+  path that tolerates the rounding differences a floating-point decoder
+  legitimately introduces. Passing both means an implementation is exact where
+  the standard demands exactness and faithful where it demands
+  fidelity, which is
+  the strongest practical guarantee a decoder can offer.
+\end{concept}
 
 % ===END-OF-MANUAL===
