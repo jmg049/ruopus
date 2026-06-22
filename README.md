@@ -106,24 +106,28 @@ P/E-core CPU; unpinned runs migrate between core types and are not reproducible)
 
 | Mode | ours c0 | libopus c0 | ours / lib | ours c10 | libopus c10 | ours / lib |
 |------|---------|-----------|-----------|----------|-------------|-----------|
-| SILK wideband 16 kb/s | 734× | 743× | **0.99×** | 705× | 220× | **3.20×** |
-| hybrid fullband 32 kb/s | 556× | 561× | **0.99×** | 423× | 194× | **2.18×** |
-| CELT fullband 64 kb/s | 1087× | 1093× | **0.99×** | 697× | 437× | **1.59×** |
+| SILK wideband 16 kb/s | 800× | 740× | **1.08×** | 750× | 218× | **3.44×** |
+| hybrid fullband 32 kb/s | 575× | 560× | **1.03×** | 442× | 193× | **2.29×** |
+| CELT fullband 64 kb/s | 1079× | 1087× | **0.99×** | 689× | 432× | **1.59×** |
 
-At matched complexity-0 we're at **parity** (all modes 0.99×, within measurement
-noise); at matched complexity-10 we're 1.6-3.2× faster. (libopus's c10 also
+At matched complexity-0 SILK and hybrid now **beat** libopus (1.08× / 1.03×) and
+CELT is at parity (0.99×); at matched complexity-10 we're 1.6-3.4× faster. (libopus's c10 also
 enables delayed-decision NSQ and warped noise shaping, which `opus_native` does
 not yet implement, so its c10 buys quality we don't spend cycles on - the c0
-column is the cleaner like-for-like.) Closing SILK/hybrid from ~0.87-0.90× to
-parity came from profiling `opus_native` against libopus 1.6.1 *function for
-function* (perf with libopus's debuginfo, pinned to one core), then matching its
-hot paths: a table-driven rate-distortion choice in the NSQ inner loop (a port of
-`silk_NSQ_sse4_1`'s `table[64][4]`, bit-exact), and compiler-unrolled per-order
-LPC analysis filters (libopus dispatches to `silk_LPC_analysis_filterN_FLP`; a
-generic SIMD dot per output sample lost to the per-call horizontal fold). Earlier
-work did SIMD (AVX2+FMA / SSE2) of the hot loops plus general tuning -
-latency-hiding in the dot kernels, and reverting SIMD where a scalar loop
-measured faster *in cycles* (not instruction counts):
+column is the cleaner like-for-like.) Taking SILK/hybrid from ~0.87-0.90× to a
+lead came from profiling `opus_native` against libopus 1.6.1 *function for
+function* (perf with libopus's debuginfo, pinned to one core), then matching or
+beating its hot paths, every change bit-exact: a table-driven rate-distortion
+choice in the NSQ inner loop (a port of `silk_NSQ_sse4_1`'s `table[64][4]`);
+compiler-unrolled per-order LPC analysis filters (libopus dispatches to
+`silk_LPC_analysis_filterN_FLP`; a generic SIMD dot per output sample lost to the
+per-call horizontal fold); an in-place fused NSQ noise-shape feedback loop (no
+per-sample scratch array); and stack-allocating the shell-coder pulse tree and
+the Burg work vectors (libopus does both on the stack; we were allocating ~80
+Vecs per frame in the shell coder alone). Earlier work did SIMD (AVX2+FMA / SSE2)
+of the hot loops plus general tuning - latency-hiding in the dot kernels, and
+reverting SIMD where a scalar loop measured faster *in cycles* (not instruction
+counts):
 
 - **CELT**: the PVQ pulse search (SSE2 *and* an AVX2 path libopus doesn't ship);
   the pre-filter pitch analysis (`celt_pitch_xcorr` + downsampler whitening,
