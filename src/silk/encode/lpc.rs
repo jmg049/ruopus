@@ -7,7 +7,6 @@
 //! prediction gain, so the resulting synthesis filter is guaranteed stable.
 //! The accumulators are `f64` to match the reference's `double` precision.
 
-
 /// Conditioning factor added to the zero-lag autocorrelation
 /// (`FIND_LPC_COND_FAC`), regularising the solve.
 const FIND_LPC_COND_FAC: f64 = 1e-5;

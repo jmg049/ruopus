@@ -359,11 +359,20 @@ pub(crate) fn alg_quant(
 ) -> u32 {
     let n = x.len();
     debug_assert!(k > 0 && n > 1);
-    let mut iy = vec![0i32; n];
-    exp_rotation(x, 1, b, k, spread);
-    let _yy = op_pvq_search(x, &mut iy, k);
-    super::cwrs::encode_pulses(enc, &iy, k);
-    extract_collapse_mask(&iy, b)
+    // Reuse a thread-local pulse buffer rather than allocating per band - band
+    // encode runs dozens of times per frame (the decode path does the same).
+    thread_local! {
+        static IY: core::cell::RefCell<alloc::vec::Vec<i32>> =
+            const { core::cell::RefCell::new(alloc::vec::Vec::new()) };
+    }
+    IY.with_borrow_mut(|iy| {
+        iy.clear();
+        iy.resize(n, 0);
+        exp_rotation(x, 1, b, k, spread);
+        let _yy = op_pvq_search(x, iy, k);
+        super::cwrs::encode_pulses(enc, iy, k);
+        extract_collapse_mask(iy, b)
+    })
 }
 
 #[cfg(test)]
