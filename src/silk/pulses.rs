@@ -202,8 +202,13 @@ fn combine_and_check(pulses_comb: &mut [i32], pulses_in: &[i32], max_pulses: i32
 /// `silk_shell_encoder` (shell_coder.c): code one 16-sample block's pulse
 /// magnitudes by recursive binary splits, top down.
 fn shell_encoder(enc: &mut RangeEncoder, pulses0: &[i32]) {
-    fn combine(input: &[i32]) -> Vec<i32> {
-        input.chunks_exact(2).map(|p| p[0] + p[1]).collect()
+    // Build the four levels of the pulse binary tree on the stack (mirrors
+    // libopus's silk_shell_encoder fixed arrays). The previous `collect()` form
+    // allocated four Vecs per 16-sample block - ~80 heap allocations per frame.
+    fn combine(out: &mut [i32], input: &[i32]) {
+        for (o, p) in out.iter_mut().zip(input.chunks_exact(2)) {
+            *o = p[0] + p[1];
+        }
     }
     fn encode_split(enc: &mut RangeEncoder, child1: i32, p: i32, table: &[u8]) {
         if p > 0 {
@@ -211,10 +216,14 @@ fn shell_encoder(enc: &mut RangeEncoder, pulses0: &[i32]) {
             enc.encode_icdf(child1 as usize, &table[off..], 8);
         }
     }
-    let pulses1 = combine(pulses0);
-    let pulses2 = combine(&pulses1);
-    let pulses3 = combine(&pulses2);
-    let pulses4 = combine(&pulses3);
+    let mut pulses1 = [0i32; 8];
+    let mut pulses2 = [0i32; 4];
+    let mut pulses3 = [0i32; 2];
+    let mut pulses4 = [0i32; 1];
+    combine(&mut pulses1, pulses0);
+    combine(&mut pulses2, &pulses1);
+    combine(&mut pulses3, &pulses2);
+    combine(&mut pulses4, &pulses3);
 
     encode_split(enc, pulses3[0], pulses4[0], &SHELL_CODE_TABLE3);
     encode_split(enc, pulses2[0], pulses3[0], &SHELL_CODE_TABLE2);
