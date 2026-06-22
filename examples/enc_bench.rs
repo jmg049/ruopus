@@ -9,13 +9,29 @@ use std::time::Instant;
 use opus_native::{Bandwidth, OpusEncoder};
 
 fn bench(label: &str, ch: usize, bw: Bandwidth, br: u32, frames: usize) {
-    // A speech/music-like signal: low tone + a high partial, per channel.
+    // The SAME reproducible speech/music-like signal as the libopus profiling
+    // bench (examples/libopus_bench.rs) and benches/vs_libopus.rs: voiced tones
+    // under a syllabic envelope, plus light noise and a high partial. Built from
+    // a precomputed sine wavetable so signal synthesis costs no libm `sinf`
+    // (huge phase arguments would otherwise hit sinf's slow range-reduction and
+    // pollute the encode profile - `perf` samples the whole process).
+    const TBL: usize = 8192;
+    let table: Vec<f32> = (0..TBL)
+        .map(|i| (2.0 * std::f32::consts::PI * i as f32 / TBL as f32).sin())
+        .collect();
+    let sine = |f: f32, n: usize| -> f32 {
+        let phase = (f * n as f32 / 48_000.0).fract();
+        table[(phase * TBL as f32) as usize % TBL]
+    };
     let make = |f: usize| -> Vec<f32> {
+        let mut seed = 0x1234_5678u32.wrapping_add(f as u32);
         (0..960 * ch)
             .map(|i| {
-                let t = (f * 960 + i / ch) as f32 / 48_000.0;
-                0.3 * (2.0 * std::f32::consts::PI * 220.0 * t).sin()
-                    + 0.15 * (2.0 * std::f32::consts::PI * 3000.0 * t).sin()
+                seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                let noise = (seed >> 9) as f32 / f32::from(u16::MAX) - 0.5;
+                let n = f * 960 + i / ch;
+                let env = 0.5 + 0.45 * sine(3.0, n).abs();
+                env * (0.45 * sine(200.0, n) + 0.25 * sine(1400.0, n) + 0.15 * sine(6500.0, n)) + 0.02 * noise
             })
             .collect()
     };
