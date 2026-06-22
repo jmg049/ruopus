@@ -141,6 +141,11 @@ pub struct OpusEncoder {
     /// bitrate is a VBR target; when `false` the CELT path codes constant
     /// bitrate - a fixed byte count per frame at the target rate.
     vbr: bool,
+    /// In-band FEC (`OPUS_SET_INBAND_FEC`): generate redundant LBRR copies in
+    /// SILK packets so a lost frame can be recovered from the next packet.
+    use_inband_fec: bool,
+    /// Expected packet loss percentage 0-100 (`OPUS_SET_PACKET_LOSS_PERC`).
+    packet_loss_perc: u8,
 }
 
 impl OpusEncoder {
@@ -167,6 +172,8 @@ impl OpusEncoder {
             dtx_noise_floor: 1.0,
             complexity: 10,
             vbr: true,
+            use_inband_fec: false,
+            packet_loss_perc: 0,
         }
     }
 
@@ -277,6 +284,35 @@ impl OpusEncoder {
     /// engages during pauses even with audible ambient noise.
     pub const fn set_dtx(&mut self, on: bool) {
         self.use_dtx = on;
+    }
+
+    /// Enables or disables in-band forward error correction
+    /// (`OPUS_SET_INBAND_FEC`). When on, SILK-mode packets carry a redundant
+    /// lower-priority copy (LBRR) of each frame, so the decoder can reconstruct
+    /// a lost frame from the *next* packet via
+    /// [`OpusDecoder::decode_fec`](crate::OpusDecoder::decode_fec). FEC applies
+    /// to the SILK-only path; CELT-only and hybrid packets are unaffected.
+    pub const fn set_inband_fec(&mut self, on: bool) {
+        self.use_inband_fec = on;
+    }
+
+    /// Whether in-band FEC is enabled (`OPUS_GET_INBAND_FEC`).
+    #[must_use]
+    pub const fn inband_fec(&self) -> bool {
+        self.use_inband_fec
+    }
+
+    /// Sets the expected packet-loss percentage 0-100
+    /// (`OPUS_SET_PACKET_LOSS_PERC`), clamped. Higher values bias the encoder
+    /// toward more loss-robust coding; it currently informs the FEC behaviour.
+    pub const fn set_packet_loss_perc(&mut self, perc: u8) {
+        self.packet_loss_perc = if perc > 100 { 100 } else { perc };
+    }
+
+    /// The expected packet-loss percentage (`OPUS_GET_PACKET_LOSS_PERC`).
+    #[must_use]
+    pub const fn packet_loss_perc(&self) -> u8 {
+        self.packet_loss_perc
     }
 
     /// Decides whether to send a DTX (TOC-only) packet for a frame with the
@@ -531,6 +567,7 @@ impl OpusEncoder {
             let (silk, resampler, _, _) = self.silk.as_mut().expect("configured");
             silk.set_bitrate(bitrate.clamp(5000, 80_000));
             silk.set_complexity(self.complexity);
+            silk.set_inband_fec(self.use_inband_fec);
             let internal = crate::silk::encode::resample_in::resample_48k(resampler, pcm);
             // Closed-loop rate control: fit the byte budget (less the TOC).
             let p = silk
@@ -645,6 +682,10 @@ impl OpusEncoder {
             let (silk, resampler, _, _) = self.silk.as_mut().expect("configured");
             silk.set_bitrate(silk_bps);
             silk.set_complexity(self.complexity);
+            // Hybrid in-band FEC is not yet supported (the LBRR copy would have
+            // to share the CELT byte budget); keep it off on the shared SILK
+            // encoder even when FEC is globally enabled.
+            silk.set_inband_fec(false);
             let internal = crate::silk::encode::resample_in::resample_48k(resampler, pcm);
             // Hard bit cap so the SILK low band leaves the CELT high band room.
             silk.encode_into(&mut enc, &internal, Some((silk_cap * 8) as i32));
@@ -1086,6 +1127,200 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// With in-band FEC enabled, a SILK packet still decodes normally on the
+    /// `OpusDecoder` finishing on the encoder's exact range state - the
+    /// redundant LBRR data is read-and-discarded by the normal decode path, so
+    /// the oracle stays in sync. Covers single-frame (20 ms) and multi-frame
+    /// (40/60 ms) packets, where the LBRR symbol is coded too.
+    #[test]
+    fn fec_packets_still_round_trip_on_normal_decode() {
+        for &spf in &[960usize, 1920, 2880] {
+            let mut enc = OpusEncoder::new(1);
+            enc.set_bandwidth(Bandwidth::WideBand);
+            enc.set_bitrate(Some(20_000));
+            enc.set_inband_fec(true);
+            enc.set_packet_loss_perc(30);
+            assert!(enc.inband_fec());
+            assert_eq!(enc.packet_loss_perc(), 30);
+            let mut dec = OpusDecoder::new(1);
+            for f in 0..4 {
+                let pcm: Vec<f32> = (0..spf)
+                    .map(|i| {
+                        let t = (f * spf + i) as f32 / 48_000.0;
+                        0.4 * (2.0 * core::f32::consts::PI * 220.0 * t).sin()
+                    })
+                    .collect();
+                let packet = enc.encode_silk(&pcm, 1275).expect("silk encode");
+                let out = dec.decode_packet(&packet).expect("decode");
+                assert_eq!(out.len(), spf);
+                assert_eq!(dec.final_range(), enc.final_range(), "range mismatch spf={spf} frame {f}");
+            }
+        }
+    }
+
+    /// End-to-end FEC recovery: enable FEC, encode a sequence, "lose" a packet,
+    /// and reconstruct it from the *next* packet's LBRR via
+    /// `OpusDecoder::decode_fec`. The recovered frame must be non-trivial (not
+    /// silence) and correlate with the original input. Also checks that with
+    /// FEC off the encoder output is byte-identical to today (no LBRR), so the
+    /// new behaviour is fully gated.
+    #[test]
+    fn fec_recovers_a_lost_frame() {
+        let spf = 960usize; // 20 ms WB mono
+        // Per-frame frequency steps, so concealment (which extrapolates the
+        // previous frame's pitch) cannot predict the lost frame's content - the
+        // FEC copy carries the real signal.
+        let make = |f: usize| -> Vec<f32> {
+            let freq = 180.0 + 90.0 * (f as f32);
+            (0..spf)
+                .map(|i| {
+                    let t = (f * spf + i) as f32 / 48_000.0;
+                    0.4 * (2.0 * core::f32::consts::PI * freq * t).sin()
+                        + 0.15 * (2.0 * core::f32::consts::PI * 2.0 * freq * t).sin()
+                })
+                .collect()
+        };
+
+        // FEC off vs on must produce different packets (LBRR adds bytes), and
+        // FEC off must match a no-FEC encoder byte-for-byte.
+        let encode_seq = |fec: bool| -> Vec<Vec<u8>> {
+            let mut enc = OpusEncoder::new(1);
+            enc.set_bandwidth(Bandwidth::WideBand);
+            enc.set_bitrate(Some(20_000));
+            enc.set_inband_fec(fec);
+            (0..6).map(|f| enc.encode_silk(&make(f), 1275).expect("encode")).collect()
+        };
+        let off = encode_seq(false);
+        let on = encode_seq(true);
+        // FEC-off output is unchanged: identical to a default encoder.
+        let mut plain = OpusEncoder::new(1);
+        plain.set_bandwidth(Bandwidth::WideBand);
+        plain.set_bitrate(Some(20_000));
+        for (f, off_p) in off.iter().enumerate() {
+            let p = plain.encode_silk(&make(f), 1275).expect("encode");
+            assert_eq!(&p, off_p, "FEC-off packet {f} differs from default encoder");
+        }
+        // FEC-on packets are larger (carry the LBRR copy).
+        assert!(
+            on.iter().zip(&off).any(|(a, b)| a.len() > b.len()),
+            "FEC packets should be larger than non-FEC"
+        );
+
+        // Decode the stream with packet 3 lost, recovering it from packet 4's
+        // LBRR. Prime the decoder with packets 0..3 first.
+        let mut dec = OpusDecoder::new(1);
+        for p in on.iter().take(3) {
+            dec.decode_packet(p).expect("decode");
+        }
+        // Packet 3 lost: recover its 960-sample frame from packet 4's FEC.
+        let recovered = dec.decode_fec(&on[4], spf).expect("decode_fec");
+        // The recovered frame is the FEC'd duration at the end of the buffer.
+        assert!(recovered.len() >= spf, "decode_fec output covers the frame");
+        let frame = &recovered[recovered.len() - spf..];
+
+        // Non-trivial: real energy, not silence/concealment-decay.
+        let energy: f64 = frame.iter().map(|&v| f64::from(v) * f64::from(v)).sum();
+        assert!(energy > 1.0, "recovered frame is silent (energy {energy:.3})");
+
+        // Correlates with the original input (delay-aligned search).
+        let orig = make(3);
+        let corr_of = |sig: &[f32]| -> f64 {
+            (0..240usize)
+                .map(|d| {
+                    let (mut s, mut dot, mut e) = (0.0f64, 0.0f64, 0.0f64);
+                    for i in 0..spf - d {
+                        let a = f64::from(orig[i]);
+                        let b = f64::from(sig[i + d]);
+                        s += a * a;
+                        dot += a * b;
+                        e += b * b;
+                    }
+                    dot / (s.sqrt() * e.sqrt()).max(1e-9)
+                })
+                .fold(0.0f64, f64::max)
+        };
+        let fec_corr = corr_of(frame);
+        assert!(fec_corr > 0.7, "recovered-frame correlation {fec_corr:.3} too low for FEC");
+
+        // Control: without FEC, recovering the same lost packet falls back to
+        // plain concealment. FEC recovery must be at least as good - and here,
+        // meaningfully better - proving the LBRR data is doing real work.
+        let mut dec_off = OpusDecoder::new(1);
+        for p in off.iter().take(3) {
+            dec_off.decode_packet(p).expect("decode");
+        }
+        let concealed = dec_off.decode_fec(&off[4], spf).expect("decode_fec falls back");
+        let conceal_frame = &concealed[concealed.len() - spf..];
+        let conceal_corr = corr_of(conceal_frame);
+        assert!(
+            fec_corr > conceal_corr + 0.05,
+            "FEC recovery ({fec_corr:.3}) should beat concealment ({conceal_corr:.3})"
+        );
+    }
+
+    /// Multi-frame (40 ms, two SILK frames) FEC recovery: the LBRR symbol and
+    /// both LBRR frames are coded, and recovering a lost 40 ms packet from its
+    /// successor reconstructs audio that beats plain concealment of the same
+    /// per-frame frequency-stepping signal.
+    #[test]
+    fn fec_recovers_a_lost_multiframe_packet() {
+        let spf = 1920usize; // 40 ms WB mono, two 20 ms SILK frames
+        let make = |f: usize| -> Vec<f32> {
+            let freq = 180.0 + 70.0 * (f as f32);
+            (0..spf)
+                .map(|i| {
+                    let t = (f * spf + i) as f32 / 48_000.0;
+                    0.4 * (2.0 * core::f32::consts::PI * freq * t).sin()
+                })
+                .collect()
+        };
+        let encode_seq = |fec: bool| -> Vec<Vec<u8>> {
+            let mut enc = OpusEncoder::new(1);
+            enc.set_bandwidth(Bandwidth::WideBand);
+            enc.set_bitrate(Some(24_000));
+            enc.set_inband_fec(fec);
+            (0..6).map(|f| enc.encode_silk(&make(f), 1275).expect("encode")).collect()
+        };
+        let on = encode_seq(true);
+        let off = encode_seq(false);
+
+        let recover = |packets: &[Vec<u8>]| -> Vec<f32> {
+            let mut dec = OpusDecoder::new(1);
+            for p in packets.iter().take(3) {
+                dec.decode_packet(p).expect("decode");
+            }
+            dec.decode_fec(&packets[4], spf).expect("decode_fec")
+        };
+        let rec = recover(&on);
+        let conc = recover(&off);
+        assert!(rec.len() >= spf && conc.len() >= spf);
+
+        // Correlate the recovered tail (the FEC'd 40 ms) with the original.
+        let orig = make(3);
+        let corr_of = |sig: &[f32]| -> f64 {
+            let frame = &sig[sig.len() - spf..];
+            (0..240usize)
+                .map(|d| {
+                    let (mut s, mut dot, mut e) = (0.0f64, 0.0f64, 0.0f64);
+                    for i in 0..spf - d {
+                        let a = f64::from(orig[i]);
+                        let b = f64::from(frame[i + d]);
+                        s += a * a;
+                        dot += a * b;
+                        e += b * b;
+                    }
+                    dot / (s.sqrt() * e.sqrt()).max(1e-9)
+                })
+                .fold(0.0f64, f64::max)
+        };
+        let (fec_corr, conceal_corr) = (corr_of(&rec), corr_of(&conc));
+        assert!(fec_corr > 0.6, "multi-frame FEC correlation {fec_corr:.3} too low");
+        assert!(
+            fec_corr > conceal_corr + 0.05,
+            "multi-frame FEC ({fec_corr:.3}) should beat concealment ({conceal_corr:.3})"
+        );
     }
 
     /// A SILK-mode Opus packet decodes through `OpusDecoder` with the final

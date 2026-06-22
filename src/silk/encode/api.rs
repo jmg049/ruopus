@@ -18,6 +18,7 @@ use alloc::vec::Vec;
 use crate::range::RangeEncoder;
 
 use super::super::indices::CondCoding;
+use super::super::tables::{LBRR_FLAGS_2_ICDF, LBRR_FLAGS_3_ICDF};
 use super::frame::SilkChannelEncoder;
 use super::stereo::{StereoEncState, lr_to_ms, stereo_encode_mid_only, stereo_encode_pred};
 
@@ -26,6 +27,15 @@ use super::stereo::{StereoEncState, lr_to_ms, stereo_encode_mid_only, stereo_enc
 pub struct SilkEncoder {
     ch: SilkChannelEncoder,
     final_range: u32,
+    /// In-band FEC (LBRR) generation enabled (`OPUS_SET_INBAND_FEC`).
+    use_inband_fec: bool,
+    /// The previous packet's coded frames (`indices`, `pulses`) captured for
+    /// LBRR. In-band FEC carries a redundant copy of the *previous* packet's
+    /// frame(s) in the current packet, so a lost packet can be recovered from
+    /// its successor (matching libopus, whose `indices_LBRR`/`pulses_LBRR` are
+    /// filled by one packet and emitted in the next). Empty when no LBRR is
+    /// pending (FEC just enabled, or the previous packet's frame count differs).
+    lbrr_prev: Vec<(super::super::indices::SideInfoIndices, Vec<i8>)>,
 }
 
 impl SilkEncoder {
@@ -36,12 +46,27 @@ impl SilkEncoder {
         SilkEncoder {
             ch: SilkChannelEncoder::new(fs_khz, nb_subfr),
             final_range: 0,
+            use_inband_fec: false,
+            lbrr_prev: Vec::new(),
         }
     }
 
     /// Sets the target bitrate (bps), which maps to the per-frame coding SNR.
     pub fn set_bitrate(&mut self, bps: i32) {
         self.ch.set_bitrate(bps);
+    }
+
+    /// Enables or disables in-band FEC (LBRR) generation. When enabled, each
+    /// packet carries a redundant copy of its SILK frame(s) so the decoder can
+    /// reconstruct a lost frame from the next packet via `decode_fec`.
+    pub fn set_inband_fec(&mut self, on: bool) {
+        self.use_inband_fec = on;
+    }
+
+    /// Whether in-band FEC is enabled.
+    #[must_use]
+    pub const fn inband_fec(&self) -> bool {
+        self.use_inband_fec
     }
 
     /// Sets the encode complexity 0-10 (the pitch-search depth).
@@ -139,23 +164,66 @@ impl SilkEncoder {
         );
         let n_frames = input.len() / frame_length;
 
-        // Header: per-frame VAD flags (all active) then the LBRR flag (no FEC).
+        if !self.use_inband_fec {
+            // Header: per-frame VAD flags (all active) then the LBRR flag (off).
+            for _ in 0..n_frames {
+                enc.encode_bit_logp(true, 1);
+            }
+            enc.encode_bit_logp(false, 1);
+            for i in 0..n_frames {
+                // The first frame of a packet is coded independently; later
+                // frames condition their gains/lag on the previous frame.
+                let cond = if i == 0 { CondCoding::Independently } else { CondCoding::Conditionally };
+                self.ch
+                    .encode_frame(enc, &input[i * frame_length..(i + 1) * frame_length], cond, max_bits);
+            }
+            return;
+        }
+
+        // In-band FEC. The current packet carries the LBRR copy of the *previous*
+        // packet's frames (if that packet had the same frame count), then the
+        // current frames coded normally. We capture the current frames' coded
+        // indices/pulses into `lbrr_prev` for the *next* packet to emit as LBRR.
+        // FEC packets never use the hybrid byte cap (FEC is SILK-only).
+        let _ = max_bits;
+        let have_lbrr = self.lbrr_prev.len() == n_frames;
+
+        // Header: VAD flags (all active), the LBRR flag, then for multi-frame
+        // packets the per-frame LBRR symbol (all frames carry LBRR here).
         for _ in 0..n_frames {
             enc.encode_bit_logp(true, 1);
         }
-        enc.encode_bit_logp(false, 1);
-
-        for i in 0..n_frames {
-            // The first frame of a packet is coded independently; later frames
-            // condition their gains/lag on the previous frame.
-            let cond = if i == 0 {
-                CondCoding::Independently
-            } else {
-                CondCoding::Conditionally
-            };
-            self.ch
-                .encode_frame(enc, &input[i * frame_length..(i + 1) * frame_length], cond, max_bits);
+        enc.encode_bit_logp(have_lbrr, 1);
+        if have_lbrr && n_frames > 1 {
+            let table: &[u8] = if n_frames == 2 { &LBRR_FLAGS_2_ICDF } else { &LBRR_FLAGS_3_ICDF };
+            let symbol = (1usize << n_frames) - 1; // all frames flagged
+            enc.encode_icdf(symbol - 1, table, 8);
         }
+
+        // Emit the previous packet's LBRR frames first (decoder reads all LBRR
+        // before the regular frames, advancing the same entropy history).
+        if have_lbrr {
+            let prev = core::mem::take(&mut self.lbrr_prev);
+            for (i, (ind, pulses)) in prev.iter().enumerate() {
+                let cond = if i == 0 { CondCoding::Independently } else { CondCoding::Conditionally };
+                self.ch.emit_frame(enc, ind, pulses, cond, true);
+            }
+        } else {
+            self.lbrr_prev.clear();
+        }
+
+        // Analyze + emit the current frames, capturing each for next packet's
+        // LBRR. `analyze_frame` advances the analysis/NSQ state and returns the
+        // coded indices+pulses; `emit_frame` then codes the regular frame.
+        let mut current: Vec<(super::super::indices::SideInfoIndices, Vec<i8>)> = Vec::with_capacity(n_frames);
+        for i in 0..n_frames {
+            let cond = if i == 0 { CondCoding::Independently } else { CondCoding::Conditionally };
+            let f = &input[i * frame_length..(i + 1) * frame_length];
+            let (ind, pulses) = self.ch.analyze_frame(f, cond);
+            self.ch.emit_frame(enc, &ind, &pulses, cond, false);
+            current.push((ind, pulses));
+        }
+        self.lbrr_prev = current;
     }
 }
 

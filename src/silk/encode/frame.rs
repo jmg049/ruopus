@@ -160,6 +160,72 @@ impl SilkChannelEncoder {
         cond_coding: CondCoding,
         max_bits: Option<i32>,
     ) -> SideInfoIndices {
+        self.encode_frame_inner(enc, input, cond_coding, max_bits).0
+    }
+
+    /// Runs analysis + NSQ for one frame and captures the coded `indices` and
+    /// `pulses` *without* emitting them, advancing the cross-frame analysis
+    /// state (NSQ history, pitch/voicing, input history, gain accumulator,
+    /// entropy history) exactly as a regular [`encode_frame`] would. The caller
+    /// then emits the captured frame with [`emit_frame`](Self::emit_frame),
+    /// optionally as an LBRR copy first. This drives multi-frame FEC packets,
+    /// where all LBRR frames precede all regular frames in the bitstream.
+    ///
+    /// Returns the chosen `indices` and pulse vector.
+    pub(crate) fn analyze_frame(
+        &mut self,
+        input: &[i16],
+        cond_coding: CondCoding,
+    ) -> (SideInfoIndices, Vec<i8>) {
+        // Emit into a throwaway encoder; we only want the analysis state and the
+        // captured indices/pulses. `ec_prev` is left as the pre-frame state
+        // (the emission caller advances it).
+        let ec_prev_pre = self.ec_prev;
+        let mut sink = RangeEncoder::new(0);
+        let (indices, pulses) = self.encode_frame_inner(&mut sink, input, cond_coding, None);
+        self.ec_prev = ec_prev_pre;
+        (indices, pulses)
+    }
+
+    /// Emits a previously [`analyze_frame`](Self::analyze_frame)d frame into
+    /// `enc` with the given conditional-coding mode, as the LBRR copy when
+    /// `lbrr` is true (which forces the VAD-present type coding). Advances the
+    /// entropy history (`ec_prev`) only - no analysis state.
+    pub(crate) fn emit_frame(
+        &mut self,
+        enc: &mut RangeEncoder,
+        indices: &SideInfoIndices,
+        pulses: &[i8],
+        cond_coding: CondCoding,
+        lbrr: bool,
+    ) {
+        let frame_length = self.nb_subfr * 5 * self.fs_khz as usize;
+        encode_indices(
+            enc,
+            indices,
+            self.fs_khz,
+            self.nb_subfr,
+            lbrr,
+            true,
+            cond_coding,
+            &mut self.ec_prev,
+        );
+        encode_pulses(
+            enc,
+            i32::from(indices.signal_type),
+            i32::from(indices.quant_offset_type),
+            pulses,
+            frame_length,
+        );
+    }
+
+    fn encode_frame_inner(
+        &mut self,
+        enc: &mut RangeEncoder,
+        input: &[i16],
+        cond_coding: CondCoding,
+        max_bits: Option<i32>,
+    ) -> (SideInfoIndices, Vec<i8>) {
         let order = if self.fs_khz == 16 { 16 } else { 10 };
         let subfr_length = 5 * self.fs_khz as usize;
         let frame_length = self.nb_subfr * subfr_length;
@@ -636,6 +702,13 @@ impl SilkChannelEncoder {
                 indices.gains_indices = *gi0;
             }
         }
+        // `indices`/`pulses`/`quant_offset_type` now hold the chosen attempt and
+        // `self.ec_prev` reflects exactly one regular emission. The caller may
+        // re-emit these captured indices/pulses as an LBRR copy (FEC).
+
+        // Capture the chosen pulses for the caller (the analysis/emission split
+        // and the LBRR copy both need them after the work buffer is returned).
+        let pulses_out = pulses.clone();
 
         // Return the work buffers for the next frame to reuse.
         self.scratch_pitch = pitch_x_buf;
@@ -644,7 +717,7 @@ impl SilkChannelEncoder {
         self.scratch_x_buf = x_buf;
         self.scratch_lpc_in = lpc_in_pre;
         self.scratch_pulses = pulses;
-        indices
+        (indices, pulses_out)
     }
 }
 
