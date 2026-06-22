@@ -95,16 +95,50 @@ pub(crate) fn energy(data: &[f32]) -> f64 {
 /// (`r[ix] = s[ix] - Σ_j s[ix-1-j]·a[j]`), with the first `order` outputs
 /// set to zero (the filter starts from zero state).
 pub(crate) fn lpc_analysis_filter_flp(r: &mut [f32], a: &[f32], s: &[f32], length: usize, order: usize) {
-    // `pred = Σ_j s[ix-1-j]·a[j]` reads the history backwards; reversing the
-    // (short) coefficient vector once turns it into a forward contiguous dot
-    // `Σ_k s[ix-order+k]·a_rev[k]` the SIMD kernel can vectorise.
-    let mut a_rev = [0.0f32; MAX_ORDER];
-    for j in 0..order {
-        a_rev[order - 1 - j] = a[j];
+    // `pred = Σ_j s[ix-1-j]·a[j]`, a short (≤16-tap) dot evaluated once per
+    // output sample. A vectorised `simd::dot` here loses: the per-call
+    // horizontal fold does not amortise over so few taps and dwarfs the work
+    // (it dominated `dot_avx2`). Dispatch on the (small, fixed) order to a
+    // const-generic inner loop the compiler fully unrolls - matching libopus's
+    // `silk_LPC_analysis_filterN_FLP` left-to-right order exactly (so
+    // bit-identical to the reference) - and pipelines across the independent
+    // output samples.
+    match order {
+        6 => filter_n::<6>(r, a, s, length),
+        8 => filter_n::<8>(r, a, s, length),
+        10 => filter_n::<10>(r, a, s, length),
+        12 => filter_n::<12>(r, a, s, length),
+        16 => filter_n::<16>(r, a, s, length),
+        _ => filter_dyn(r, a, s, length, order),
     }
-    let a_rev = &a_rev[..order];
+}
+
+/// Const-order LPC analysis filter inner loop (fully unrolled by the compiler).
+#[inline]
+fn filter_n<const N: usize>(r: &mut [f32], a: &[f32], s: &[f32], length: usize) {
+    let a: &[f32; N] = a[..N].try_into().expect("a has at least N coefficients");
+    for ix in N..length {
+        let hist: &[f32; N] = s[ix - N..ix].try_into().expect("window is N wide");
+        let mut pred = 0.0f32;
+        for j in 0..N {
+            pred += hist[N - 1 - j] * a[j];
+        }
+        r[ix] = s[ix] - pred;
+    }
+    for v in r.iter_mut().take(N) {
+        *v = 0.0;
+    }
+}
+
+/// Fallback for orders outside the SILK set (kept for completeness).
+fn filter_dyn(r: &mut [f32], a: &[f32], s: &[f32], length: usize, order: usize) {
+    let a = &a[..order];
     for ix in order..length {
-        let pred = crate::simd::dot(a_rev, &s[ix - order..ix]);
+        let hist = &s[ix - order..ix];
+        let mut pred = 0.0f32;
+        for j in 0..order {
+            pred += hist[order - 1 - j] * a[j];
+        }
         r[ix] = s[ix] - pred;
     }
     for v in r.iter_mut().take(order) {
