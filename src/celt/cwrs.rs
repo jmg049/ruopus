@@ -18,7 +18,6 @@
 //! exploits the symmetry `U(n,k) = U(k,n)`; the row index `min(n,k)` is ≤ 14
 //! for every `(n,k)` CELT's bit allocation produces.
 
-use std::sync::OnceLock;
 
 use crate::range::{RangeDecoder, RangeEncoder};
 
@@ -34,31 +33,42 @@ const PVQ_U_ROW: [usize; 16] = [
 /// data starts at column `m`: `data[PVQ_U_ROW[m] + c] = U(m, c)` for `c ≥ m`
 /// (so `PVQ_U_ROW[m]` is the raw start minus `m`). Entries past where `U` fits
 /// 32 bits are never accessed (their wrap is harmless).
+const PVQ_U_DATA_LEN: usize = PVQ_U_ROW[15];
+
+/// The `U(n, k)` table, computed at compile time from the recurrence (so there
+/// is no runtime initialisation and no `std`/allocator dependency).
+const fn compute_pvq_u_data() -> [u32; PVQ_U_DATA_LEN] {
+    // U(a, b) for a ≤ 14, b ≤ 176 (the widest standard band).
+    let mut uu = [[0u32; 177]; 15];
+    uu[0][0] = 1; // base: U(0,0)=1, U(0,b>0)=U(a>0,0)=0; recurrence only for a,b≥1.
+    let mut a = 1;
+    while a < 15 {
+        let mut b = 1;
+        while b < 177 {
+            uu[a][b] = uu[a - 1][b].wrapping_add(uu[a][b - 1]).wrapping_add(uu[a - 1][b - 1]);
+            b += 1;
+        }
+        a += 1;
+    }
+    let mut d = [0u32; PVQ_U_DATA_LEN];
+    let mut m = 0;
+    while m < 15 {
+        let start = PVQ_U_ROW[m] + m; // raw start of row m
+        let end = if m < 14 { PVQ_U_ROW[m + 1] + (m + 1) } else { PVQ_U_ROW[15] };
+        let mut p = start;
+        while p < end {
+            d[p] = uu[m][p - PVQ_U_ROW[m]];
+            p += 1;
+        }
+        m += 1;
+    }
+    d
+}
+
+static PVQ_U_DATA: [u32; PVQ_U_DATA_LEN] = compute_pvq_u_data();
+
 fn pvq_u_data() -> &'static [u32] {
-    static T: OnceLock<alloc::vec::Vec<u32>> = OnceLock::new();
-    T.get_or_init(|| {
-        // U(a, b) for a ≤ 14, b ≤ 176 (the widest standard band).
-        let mut uu = [[0u32; 177]; 15];
-        uu[0][0] = 1; // base: U(0,0)=1, U(0,b>0)=U(a>0,0)=0; recurrence only for a,b≥1.
-        for a in 1..15 {
-            for b in 1..177 {
-                uu[a][b] = uu[a - 1][b].wrapping_add(uu[a][b - 1]).wrapping_add(uu[a - 1][b - 1]);
-            }
-        }
-        let mut d = alloc::vec![0u32; PVQ_U_ROW[15]];
-        for m in 0..15 {
-            let start = PVQ_U_ROW[m] + m; // raw start of row m
-            let end = if m < 14 {
-                PVQ_U_ROW[m + 1] + (m + 1)
-            } else {
-                PVQ_U_ROW[15]
-            };
-            for p in start..end {
-                d[p] = uu[m][p - PVQ_U_ROW[m]];
-            }
-        }
-        d
-    })
+    &PVQ_U_DATA
 }
 
 /// `U(n, k)` (`CELT_PVQ_U`) via the symmetric table (`data = pvq_u_data()`,
