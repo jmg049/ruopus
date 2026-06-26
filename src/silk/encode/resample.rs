@@ -115,8 +115,9 @@ pub(crate) fn down2_3(s: &mut [i32; 6], out: &mut [i16], inp: &[i16]) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec;
+
+    use super::*;
 
     fn pin_input() -> [i16; 48] {
         core::array::from_fn(|i| ((i as i32 * 1237 + 11) % 9001 - 4500) as i16)

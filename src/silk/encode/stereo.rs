@@ -10,13 +10,12 @@
 extern crate alloc;
 use alloc::vec;
 
-use crate::range::RangeEncoder;
-
 use super::super::math::{div32_var_q, rshift_round, smlabb, smlawb, smulbb, smulwb, sqrt_approx};
 use super::super::plc::sum_sqr_shift;
 use super::super::tables::{
     STEREO_ONLY_CODE_MID_ICDF, STEREO_PRED_JOINT_ICDF, STEREO_PRED_QUANT_Q13, UNIFORM3_ICDF, UNIFORM5_ICDF,
 };
+use crate::range::RangeEncoder;
 
 const STEREO_QUANT_TAB_SIZE: usize = 16;
 const STEREO_QUANT_SUB_STEPS: i32 = 5;

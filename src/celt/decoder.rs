@@ -17,8 +17,6 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::range::RangeDecoder;
-
 use super::bands::{anti_collapse, quant_all_bands};
 use super::energy::{EnergyState, decode_coarse_energy, decode_energy_finalise, decode_fine_energy};
 use super::mdct::MdctLookup;
@@ -30,6 +28,9 @@ use super::plc::{
 use super::rate::{BITRES, compute_allocation, init_caps};
 use super::tables::WINDOW120;
 use super::vq::Spread;
+#[cfg(not(feature = "std"))]
+use crate::float::FloatExt;
+use crate::range::RangeDecoder;
 
 /// Synthesis history length (`DECODE_BUFFER_SIZE`).
 const DECODE_BUFFER_SIZE: usize = 2048;

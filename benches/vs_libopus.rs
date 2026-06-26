@@ -1,5 +1,4 @@
-//! Throughput comparison: pure-Rust `opus_native` vs libopus (1.6, via the
-//! `opus` FFI crate) - decode and encode, in-process, on identical data.
+//! Throughput comparison: pure-Rust `opus_native` vs libopus (1.6, via the `opus` FFI crate) - decode and encode, in-process, on identical data.
 //!
 //!   cargo bench --bench vs_libopus --features std
 //!

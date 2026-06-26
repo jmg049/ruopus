@@ -13,13 +13,12 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::range::{RangeDecoder, RangeEncoder};
-
 use super::math::smulbb;
 use super::tables::{
     LSB_ICDF, MAX_PULSES_TABLE, PULSES_PER_BLOCK_BITS_Q5, PULSES_PER_BLOCK_ICDF, RATE_LEVELS_BITS_Q5, RATE_LEVELS_ICDF,
     SHELL_CODE_TABLE_OFFSETS, SHELL_CODE_TABLE0, SHELL_CODE_TABLE1, SHELL_CODE_TABLE2, SHELL_CODE_TABLE3, SIGN_ICDF,
 };
+use crate::range::{RangeDecoder, RangeEncoder};
 
 /// Samples per shell block.
 pub(crate) const SHELL_CODEC_FRAME_LENGTH: usize = 16;
@@ -386,9 +385,8 @@ pub(crate) fn encode_pulses(
 mod tests {
     use alloc::vec::Vec;
 
-    use crate::range::{RangeDecoder, RangeEncoder};
-
     use super::*;
+    use crate::range::{RangeDecoder, RangeEncoder};
 
     fn lcg(seed: &mut u32) -> u32 {
         *seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);

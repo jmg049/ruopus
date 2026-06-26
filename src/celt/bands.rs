@@ -15,23 +15,22 @@
 //!
 //! # Differences from the reference, none observable
 //!
-//! - The folding source (`lowband`) is copied per band instead of aliasing
-//!   the caller's buffers; all writes to the folding history happen after
-//!   every read, so values are identical.
-//! - The `i >= effEBands` spill path is omitted: the standard Opus mode has
-//!   `effEBands == nbEBands`, so it is unreachable (custom modes are not part
-//!   of RFC 6716).
+//! - The folding source (`lowband`) is copied per band instead of aliasing the caller's buffers; all writes to the
+//!   folding history happen after every read, so values are identical.
+//! - The `i >= effEBands` spill path is omitted: the standard Opus mode has `effEBands == nbEBands`, so it is
+//!   unreachable (custom modes are not part of RFC 6716).
 
 use alloc::vec;
 use alloc::vec::Vec;
-
-use crate::range::RangeDecoder;
 
 use super::modes::{EBANDS, LOG_N, NB_EBANDS};
 #[cfg(test)]
 use super::rate::AllocEc;
 use super::rate::{BITRES, bits2pulses, get_pulses, pulses2bits};
 use super::vq::{Spread, alg_unquant, renormalise_vector};
+#[cfg(not(feature = "std"))]
+use crate::float::FloatExt;
+use crate::range::RangeDecoder;
 
 /// `1.0` in the reference's Q15 norm scale; the float build uses plain 1.0.
 const Q15_ONE: f32 = 1.0;
@@ -1214,13 +1213,15 @@ mod tests {
 /// the time/frequency reshaping (Haar/Hadamard) is an identity there, so
 /// each band reduces to recursive theta splits plus PVQ
 /// (`quant_all_bands`, encoder direction, no resynthesis).
+#[cfg(feature = "std")]
 pub(crate) mod encode {
-    use crate::range::RangeEncoder;
-
     use super::super::modes::{EBANDS, LOG_N, NB_EBANDS};
     use super::super::rate::{BITRES, bits2pulses, pulses2bits};
     use super::super::vq::{Spread, alg_quant, stereo_itheta};
     use super::{QTHETA_OFFSET, bitexact_cos, bitexact_log2tan, compute_qn, deinterleave_hadamard, frac_mul16, haar1};
+    #[cfg(not(feature = "std"))]
+    use crate::float::FloatExt;
+    use crate::range::RangeEncoder;
 
     /// `stereo_split`: L/R → normalised mid/side in place.
     fn stereo_split(x: &mut [f32], y: &mut [f32]) {

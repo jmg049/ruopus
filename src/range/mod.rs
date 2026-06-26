@@ -3,12 +3,10 @@
 //! Opus entropy-codes nearly everything through a single range coder, which
 //! doubles as the codec's bit-packer. Three kinds of data share one buffer:
 //!
-//! - **Range-coded symbols** with static probability models, packed MSB-first
-//!   from the *front* of the frame.
-//! - **Raw bits** (used by the CELT layer), packed LSB-first from the *end* of
-//!   the frame, bypassing the range coder.
-//! - **Uniform integers**, split between a range-coded high part and raw-bit
-//!   low part by [`RangeDecoder::decode_uint`]/[`RangeEncoder::encode_uint`].
+//! - **Range-coded symbols** with static probability models, packed MSB-first from the *front* of the frame.
+//! - **Raw bits** (used by the CELT layer), packed LSB-first from the *end* of the frame, bypassing the range coder.
+//! - **Uniform integers**, split between a range-coded high part and raw-bit low part by
+//!   [`RangeDecoder::decode_uint`]/[`RangeEncoder::encode_uint`].
 //!
 //! The two directions may legally *overlap* in the middle of the buffer: the
 //! range decoder reads several bytes ahead, and the encoder terminates the

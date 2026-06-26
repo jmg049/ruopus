@@ -1,25 +1,20 @@
 //! A pure-Rust implementation of the Opus audio codec ([RFC 6716]).
 //!
-//! No FFI, no unsafe code, no dependencies. The framing/entropy core
-//! ([`range`], [`packet`], [`ogg`]) is `no_std` + `alloc`; the signal
-//! processing layers ([`celt`]) currently require the default `std` feature
-//! for float math (a `libm`-backed `no_std` option can follow).
-//!
-//! # Status
-//!
-//! Pre-release. The layers currently implemented, bottom-up:
+//! No FFI. `unsafe` is confined to a few documented SIMD kernels, all checked
+//! under Miri. The decoder, the range coder and the packet layer build for
+//! `no_std` + `alloc` (enable the `libm` feature); the encoder currently
+//! requires `std`.
 //!
 //! | Module | RFC 6716 | Contents |
 //! |--------|----------|----------|
 //! | [`range`] | §4.1, §5.1 | range decoder + encoder: symbols, binary/ICDF contexts, raw bits, uniform integers, `tell`/`tell_frac` |
 //! | [`packet`] | §3 | TOC byte, frame packing codes 0-3, padding, R1-R7 validation |
+//! | [`silk`] | §4.2 | SILK decoder and encoder |
+//! | [`celt`] | §4.3 | CELT decoder and encoder |
 //! | [`ogg`] | RFC 3533 + RFC 7845 | Ogg pages, packet reassembly, `OpusHead`/`OpusTags`, granule/pre-skip timing, stream reader/writer |
-//! | [`lpc`] | analysis groundwork for §4.2/§5.2 | Levinson-Durbin, LP analysis/synthesis filters, pitch estimation, single-tap LTP |
-//! | [`experimental`] | - | the pre-conformance frame codec, mode detection, hybrid crossover, and mid/side helpers ported from `audio_samples` |
 //!
-//! The conformant SILK (§4.2) and CELT (§4.3) decoders are under construction
-//! on top of these layers; the [`experimental`] module documents exactly how
-//! it differs from real Opus in the meantime.
+//! The decoder passes the official RFC 8251 conformance vectors; the encoder
+//! produces standard Opus that libopus and ffmpeg decode.
 //!
 //! # Bit-exactness
 //!
@@ -35,28 +30,38 @@
 
 extern crate alloc;
 
-#[cfg(feature = "std")]
+// Float transcendentals need `std` (inherent `f32`/`f64` methods) or `libm`.
+#[cfg(all(not(feature = "std"), not(feature = "libm")))]
+compile_error!(
+    "opus_native needs floating-point transcendentals: enable the default `std` feature, or for \
+     `no_std` build with `default-features = false, features = [\"libm\"]`"
+);
+
+// On `no_std`, this trait re-supplies the std-only float methods (`x.sin()`,
+// ...) via `libm`; on `std` it is not compiled and the inherent methods are used.
+#[cfg(not(feature = "std"))]
+mod float;
+
 pub mod celt;
-#[cfg(feature = "std")]
 mod decoder;
+// The encoder (and its analysis) is still std-only for now; no_std currently
+// targets the decoder. The SIMD kernels are encoder-only too (the decode path
+// is SIMD-free), so they stay behind `std`.
 #[cfg(feature = "std")]
 mod encoder;
 #[cfg(feature = "std")]
 mod encoder_analysis;
-#[cfg(feature = "std")]
 mod multistream;
-#[cfg(feature = "std")]
 pub use decoder::{OggDecodeError, OpusDecoder, decode_ogg_opus};
 #[cfg(feature = "std")]
 pub use encoder::{Application, EncodeError, OpusEncoder, Signal, encode_ogg_opus};
-#[cfg(feature = "std")]
 pub use multistream::MultistreamDecoder;
 #[cfg(feature = "std")]
 pub use silk::encode::api::{SilkEncoder, SilkStereoEncoder};
-#[cfg(feature = "experimental-codec")]
-pub mod experimental;
-#[cfg(feature = "experimental-codec")]
-pub mod lpc;
+// General LPC/pitch DSP utilities, exposed only through the Python `lowlevel`
+// bindings.
+#[cfg(feature = "python")]
+pub(crate) mod lpc;
 pub mod ogg;
 pub mod packet;
 pub mod range;

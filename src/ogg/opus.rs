@@ -1,11 +1,10 @@
 //! Ogg encapsulation for Opus (RFC 7845): the `OpusHead`/`OpusTags` headers
 //! and stream-level reading/writing.
 
+use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
-
-use alloc::collections::VecDeque;
 
 use super::page::{NO_GRANULE, OggPacket, PacketReader, PageReader, PageWriter};
 use crate::packet::Toc;

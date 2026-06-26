@@ -6,8 +6,9 @@
 //! enum-specific helper methods delegate to the core implementation, so Python
 //! and Rust expose identical behaviour under identical names.
 
-use pyo3::prelude::*;
 use std::time::Duration;
+
+use pyo3::prelude::*;
 
 /// Operating mode of an Opus frame (RFC 6716 §3.1).
 #[pyclass(eq, eq_int, frozen, hash, from_py_object, module = "opus_native", name = "Mode")]
@@ -140,7 +141,15 @@ impl From<Signal> for crate::encoder::Signal {
 }
 
 /// Coding application / latency profile (``OPUS_SET_APPLICATION``).
-#[pyclass(eq, eq_int, frozen, hash, from_py_object, module = "opus_native", name = "Application")]
+#[pyclass(
+    eq,
+    eq_int,
+    frozen,
+    hash,
+    from_py_object,
+    module = "opus_native",
+    name = "Application"
+)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Application {
     /// VoIP: optimise for speech - bias toward SILK / hybrid

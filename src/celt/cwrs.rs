@@ -5,11 +5,9 @@
 //! signed unit pulses, transmitted as a single uniformly distributed integer
 //! index in `0..V(N, K)`, where
 //!
-//! - `V(N, K)` is the number of N-dimensional pulse vectors with K pulses
-//!   (signs included), and
-//! - `U(N, K) = (V(N-1, K-1) + V(N, K-1)) / 2`, the enumeration's working
-//!   function, symmetric in its arguments and obeying
-//!   `U(N, K) = U(N-1, K) + U(N, K-1) + U(N-1, K-1)`.
+//! - `V(N, K)` is the number of N-dimensional pulse vectors with K pulses (signs included), and
+//! - `U(N, K) = (V(N-1, K-1) + V(N, K-1)) / 2`, the enumeration's working function, symmetric in its arguments and
+//!   obeying `U(N, K) = U(N-1, K) + U(N, K-1) + U(N-1, K-1)`.
 //!
 //! This uses a **table-driven** fast path: the `U` rows live in a precomputed flat table
 //! (`CELT_PVQ_U_DATA`, 1272 `u32`, generated once from the recurrence on first
@@ -17,7 +15,6 @@
 //! on-the-fly recurrence - the dominant cost of CELT band decode. The table
 //! exploits the symmetry `U(n,k) = U(k,n)`; the row index `min(n,k)` is ≤ 14
 //! for every `(n,k)` CELT's bit allocation produces.
-
 
 use crate::range::{RangeDecoder, RangeEncoder};
 
@@ -54,7 +51,11 @@ const fn compute_pvq_u_data() -> [u32; PVQ_U_DATA_LEN] {
     let mut m = 0;
     while m < 15 {
         let start = PVQ_U_ROW[m] + m; // raw start of row m
-        let end = if m < 14 { PVQ_U_ROW[m + 1] + (m + 1) } else { PVQ_U_ROW[15] };
+        let end = if m < 14 {
+            PVQ_U_ROW[m + 1] + (m + 1)
+        } else {
+            PVQ_U_ROW[15]
+        };
         let mut p = start;
         while p < end {
             d[p] = uu[m][p - PVQ_U_ROW[m]];

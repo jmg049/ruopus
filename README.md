@@ -18,9 +18,9 @@ no C and no FFI.
 `libopus`, needs no C toolchain, and exposes plain `&[u8]`/`&[i16]`/`&[f32]`
 interfaces, so it embeds under any audio stack.
 
-- Pure Rust, no FFI. Builds on `wasm32`. The core (range coder and packet layer)
-  is `no_std` + `alloc`; the full decoder/encoder currently needs `std` for
-  floating-point math.
+- Pure Rust, no FFI. Builds on `wasm32`. The decoder is `no_std` + `alloc`
+  (build with `default-features = false, features = ["libm"]`); the encoder
+  currently needs `std`.
 - `unsafe` is denied by default. The only exceptions are a few `std::arch` SIMD
   hot loops, each carrying a `// SAFETY:` note ([`docs/unsafe.md`](docs/unsafe.md))
   and checked for undefined behaviour by Miri on both the SSE2 and AVX2 paths

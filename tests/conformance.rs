@@ -164,16 +164,12 @@ fn celt_end_band(bw: opus_native::Bandwidth) -> usize {
 
 /// Decodes every CELT-only vector packet and checks two oracles per vector:
 ///
-/// 1. **Final range** (per packet): the decoder's range-coder `rng` after
-///    the last frame must equal the encoder's recorded value - it matches
-///    only if every entropy-coded symbol was consumed exactly as produced.
-/// 2. **PCM output** (whole vector): the synthesized audio against the
-///    reference decoder's `.dec` output. The synthesis chain (denormalise,
-///    inverse MDCT, post-filter, de-emphasis) never touches the range
-///    coder, so only this catches bugs there. The reference is a float
-///    build like ours, so the SNR demanded here is far above the official
-///    `opus_compare` bar; FFT and float-ordering differences are all that
-///    remain.
+/// 1. **Final range** (per packet): the decoder's range-coder `rng` after the last frame must equal the encoder's
+///    recorded value - it matches only if every entropy-coded symbol was consumed exactly as produced.
+/// 2. **PCM output** (whole vector): the synthesized audio against the reference decoder's `.dec` output. The synthesis
+///    chain (denormalise, inverse MDCT, post-filter, de-emphasis) never touches the range coder, so only this catches
+///    bugs there. The reference is a float build like ours, so the SNR demanded here is far above the official
+///    `opus_compare` bar; FFT and float-ordering differences are all that remain.
 #[cfg(feature = "std")]
 #[test]
 fn celt_only_vectors_final_range_is_bit_exact_and_pcm_matches() {

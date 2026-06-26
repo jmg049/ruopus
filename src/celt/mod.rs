@@ -28,15 +28,19 @@
 pub mod bands;
 pub mod cwrs;
 pub mod decoder;
+// Encoder, pitch analysis and the SIMD pulse search are encode-only (the decode
+// path is SIMD-free), so they stay behind `std` while no_std targets decode.
+#[cfg(feature = "std")]
 pub mod encoder;
 pub mod energy;
 pub mod laplace;
 pub mod mdct;
 pub mod modes;
+#[cfg(feature = "std")]
 pub(crate) mod pitch;
 pub(crate) mod plc;
 pub mod rate;
 pub mod tables;
 pub mod vq;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", feature = "std"))]
 mod vq_simd;

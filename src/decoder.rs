@@ -14,6 +14,8 @@ use alloc::vec::Vec;
 
 use crate::celt::decoder::CeltDecoder;
 use crate::celt::tables::WINDOW120;
+#[cfg(not(feature = "std"))]
+use crate::float::FloatExt;
 use crate::packet::{Bandwidth, Mode, Packet, PacketError};
 use crate::range::RangeDecoder;
 use crate::silk::api::{DecControl, SilkDecoder};
@@ -567,6 +569,7 @@ impl core::fmt::Display for OggDecodeError {
     }
 }
 
+#[cfg(feature = "std")]
 impl std::error::Error for OggDecodeError {}
 
 /// Decodes an in-memory Ogg Opus file end to end (RFC 7845 §4):

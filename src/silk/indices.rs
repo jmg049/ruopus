@@ -9,8 +9,6 @@
 
 #![allow(dead_code, reason = "consumed incrementally as the SILK decoder stages land")]
 
-use crate::range::RangeDecoder;
-
 use super::tables::{
     DELTA_GAIN_ICDF, GAIN_ICDF, LTP_GAIN_ICDF_0, LTP_GAIN_ICDF_1, LTP_GAIN_ICDF_2, LTP_PER_INDEX_ICDF, LTPSCALE_ICDF,
     NLSF_CB1_ICDF_NB_MB, NLSF_CB1_ICDF_WB, NLSF_CB1_NB_MB_Q8, NLSF_CB1_WB_Q8, NLSF_CB1_WB_WGHT_Q9, NLSF_CB1_WGHT_Q9,
@@ -20,6 +18,7 @@ use super::tables::{
     PITCH_CONTOUR_NB_ICDF, PITCH_DELTA_ICDF, PITCH_LAG_ICDF, TYPE_OFFSET_NO_VAD_ICDF, TYPE_OFFSET_VAD_ICDF,
     UNIFORM4_ICDF, UNIFORM6_ICDF, UNIFORM8_ICDF,
 };
+use crate::range::RangeDecoder;
 
 /// `MAX_NB_SUBFR`: subframes per 20 ms frame.
 pub(crate) const MAX_NB_SUBFR: usize = 4;
@@ -365,9 +364,8 @@ pub(crate) fn encode_indices(
 
 #[cfg(test)]
 mod tests {
-    use crate::range::{RangeDecoder, RangeEncoder};
-
     use super::*;
+    use crate::range::{RangeDecoder, RangeEncoder};
 
     fn lcg(seed: &mut u32) -> u32 {
         *seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);

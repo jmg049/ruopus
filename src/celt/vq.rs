@@ -7,11 +7,14 @@
 //! parameter. The collapse mask (one bit per interleaved MDCT block) feeds
 //! the anti-collapse logic for transient frames.
 
+// `vec!` is only used by the (std-only) encode helpers in this module.
+#[cfg(feature = "std")]
 use alloc::vec;
 
-use crate::range::RangeDecoder;
-
 use super::cwrs::decode_pulses;
+#[cfg(not(feature = "std"))]
+use crate::float::FloatExt;
+use crate::range::RangeDecoder;
 
 /// Spreading decision values (RFC 6716 Table 59, `SPREAD_*`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,13 +170,10 @@ pub fn alg_unquant(
     debug_assert!(k > 0, "alg_unquant() needs at least one pulse");
     debug_assert!(x.len() > 1, "alg_unquant() needs at least two dimensions");
 
-    // Reuse a thread-local pulse buffer rather than allocating per band - band
-    // decode runs dozens of times per frame.
-    thread_local! {
-        static IY: core::cell::RefCell<alloc::vec::Vec<i32>> =
-            const { core::cell::RefCell::new(alloc::vec::Vec::new()) };
-    }
-    IY.with_borrow_mut(|iy| {
+    // Reuse a thread-local pulse buffer on `std` (band decode runs dozens of
+    // times per frame); on `no_std` (no thread locals) allocate per call.
+    #[cfg_attr(feature = "std", allow(unused_mut))]
+    let mut run = |iy: &mut alloc::vec::Vec<i32>| -> Option<u32> {
         iy.clear();
         iy.resize(x.len(), 0);
         decode_pulses(dec, iy, k)?;
@@ -181,7 +181,19 @@ pub fn alg_unquant(
         normalise_residual(iy, x, ryy, gain);
         exp_rotation(x, -1, b, k, spread);
         Some(extract_collapse_mask(iy, b))
-    })
+    };
+    #[cfg(feature = "std")]
+    {
+        thread_local! {
+            static IY: core::cell::RefCell<alloc::vec::Vec<i32>> =
+                const { core::cell::RefCell::new(alloc::vec::Vec::new()) };
+        }
+        IY.with_borrow_mut(run)
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        run(&mut alloc::vec::Vec::new())
+    }
 }
 
 /// Renormalises `x` to norm `gain` (`renormalise_vector`); used for folded
@@ -195,6 +207,7 @@ pub fn renormalise_vector(x: &mut [f32], gain: f32) {
 }
 
 /// The float approximation the encoder uses for the theta angle.
+#[cfg(feature = "std")]
 fn fast_atan2f(y: f32, x: f32) -> f32 {
     const CA: f32 = 0.43157974;
     #[allow(clippy::excessive_precision, reason = "verbatim reference constant")]
@@ -218,6 +231,7 @@ fn fast_atan2f(y: f32, x: f32) -> f32 {
 
 /// `stereo_itheta`: the quantisation angle between two halves (or
 /// mid/side when `stereo`), in Q14.
+#[cfg(feature = "std")]
 pub(crate) fn stereo_itheta(x: &[f32], y: &[f32], stereo: bool) -> i32 {
     let mut emid = 1e-15f32;
     let mut eside = 1e-15f32;
@@ -250,6 +264,7 @@ pub(crate) fn stereo_itheta(x: &[f32], y: &[f32], stereo: bool) -> i32 {
 /// elsewhere. Both produce a valid (round-trippable) pulse vector; the SIMD
 /// path's `rsqrt` approximation may pick a marginally different - still
 /// conformant - vector. See [`super::vq_simd`] and `docs/unsafe.md`.
+#[cfg(feature = "std")]
 #[inline]
 fn op_pvq_search(x: &mut [f32], iy: &mut [i32], k: usize) -> f32 {
     #[cfg(target_arch = "x86_64")]
@@ -264,6 +279,7 @@ fn op_pvq_search(x: &mut [f32], iy: &mut [i32], k: usize) -> f32 {
 
 /// `op_pvq_search` (float build): finds the K-pulse vector maximising
 /// correlation with `x` (made non-negative in place).
+#[cfg(feature = "std")]
 #[cfg_attr(target_arch = "x86_64", allow(dead_code))]
 fn op_pvq_search_scalar(x: &mut [f32], iy: &mut [i32], k: usize) -> f32 {
     let n = x.len();
@@ -348,6 +364,7 @@ fn op_pvq_search_scalar(x: &mut [f32], iy: &mut [i32], k: usize) -> f32 {
 }
 
 /// Encodes one band's shape with `k` pulses (`alg_quant`, no resynthesis).
+#[cfg(feature = "std")]
 pub(crate) fn alg_quant(
     enc: &mut crate::range::RangeEncoder,
     x: &mut [f32],
@@ -357,20 +374,28 @@ pub(crate) fn alg_quant(
 ) -> u32 {
     let n = x.len();
     debug_assert!(k > 0 && n > 1);
-    // Reuse a thread-local pulse buffer rather than allocating per band - band
-    // encode runs dozens of times per frame (the decode path does the same).
-    thread_local! {
-        static IY: core::cell::RefCell<alloc::vec::Vec<i32>> =
-            const { core::cell::RefCell::new(alloc::vec::Vec::new()) };
-    }
-    IY.with_borrow_mut(|iy| {
+    // Reuse a thread-local pulse buffer on `std`; allocate per call on `no_std`.
+    #[cfg_attr(feature = "std", allow(unused_mut))]
+    let mut run = |iy: &mut alloc::vec::Vec<i32>| -> u32 {
         iy.clear();
         iy.resize(n, 0);
         exp_rotation(x, 1, b, k, spread);
         let _yy = op_pvq_search(x, iy, k);
         super::cwrs::encode_pulses(enc, iy, k);
         extract_collapse_mask(iy, b)
-    })
+    };
+    #[cfg(feature = "std")]
+    {
+        thread_local! {
+            static IY: core::cell::RefCell<alloc::vec::Vec<i32>> =
+                const { core::cell::RefCell::new(alloc::vec::Vec::new()) };
+        }
+        IY.with_borrow_mut(run)
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        run(&mut alloc::vec::Vec::new())
+    }
 }
 
 #[cfg(test)]

@@ -520,9 +520,10 @@ pub(crate) fn nsq(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec;
     use alloc::vec::Vec;
+
+    use super::*;
 
     /// NSQ's reconstructed `xq` must equal an independent synthesis from the
     /// pulses it emitted (the decoder's formula): excitation (dithered) +

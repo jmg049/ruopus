@@ -59,7 +59,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # A bare-metal target with no std proves the core crate is no_std + alloc
       # clean (the cdylib/Python path needs std and is not built here).
-      - run: cargo build -p opus_native --no-default-features --target thumbv7em-none-eabihf
+      - run: cargo build -p opus_native --no-default-features --features libm --target thumbv7em-none-eabihf
 
   conformance:
     name: conformance vectors

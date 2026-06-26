@@ -13,14 +13,13 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::range::RangeDecoder;
-
 use super::decoder::SilkChannelDecoder;
 use super::indices::{CondCoding, decode_indices};
 use super::pulses::decode_pulses;
 use super::resampler::Resampler;
 use super::stereo::{StereoDecState, stereo_decode_mid_only, stereo_decode_pred, stereo_ms_to_lr};
 use super::tables::{LBRR_FLAGS_2_ICDF, LBRR_FLAGS_3_ICDF};
+use crate::range::RangeDecoder;
 
 /// Maximum number of frames per packet.
 const MAX_FRAMES_PER_PACKET: usize = 3;

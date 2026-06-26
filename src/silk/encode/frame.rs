@@ -20,8 +20,6 @@ extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::range::RangeEncoder;
-
 use super::super::gains::{gains_dequant, gains_quant};
 use super::super::indices::{
     CondCoding, EcPrevState, MAX_LPC_ORDER, MAX_NB_SUBFR, SideInfoIndices, TYPE_UNVOICED, TYPE_VOICED, encode_indices,
@@ -42,6 +40,7 @@ use super::noise_shape::{NoiseShapeConfig, ShapeState, noise_shape_analysis};
 use super::nsq::{NsqConfig, NsqState, nsq};
 use super::pitch_analysis::find_pitch_lags;
 use super::vad::VadState;
+use crate::range::RangeEncoder;
 
 /// One channel's SILK encoder state.
 #[derive(Clone)]
@@ -280,9 +279,7 @@ impl SilkChannelEncoder {
 
         // Voice-activity analysis: speech-activity, spectral tilt and per-band
         // input quality, which tune the pitch threshold, noise shaping and gains.
-        let vad = {
-            self.vad.get_sa_q8(input, frame_length, self.fs_khz)
-        };
+        let vad = { self.vad.get_sa_q8(input, frame_length, self.fs_khz) };
 
         // Pitch analysis: whiten and search for the lag. `pitch_x_buf` holds
         // `ltp_mem_length` of history, the frame, then `la_pitch` lookahead;
@@ -371,9 +368,7 @@ impl SilkChannelEncoder {
             pred_gain: pl.pred_gain,
             pitch_l,
         };
-        let shp = {
-            noise_shape_analysis(&mut self.shape, &shape_cfg, &res_f, &x_buf)
-        };
+        let shp = { noise_shape_analysis(&mut self.shape, &shape_cfg, &res_f, &x_buf) };
 
         // `silk_find_pred_coefs_FLP`: short- and long-term prediction analysis
         // on the gain-normalised input. `LPC_in_pre` holds, per subframe,
@@ -407,9 +402,7 @@ impl SilkChannelEncoder {
                 &mut xx,
                 &mut x_x,
             );
-            let g = {
-                quant_ltp_gains(&xx, &x_x, subfr_length as i32, self.nb_subfr, &mut self.sum_log_gain_q7)
-            };
+            let g = { quant_ltp_gains(&xx, &x_x, subfr_length as i32, self.nb_subfr, &mut self.sum_log_gain_q7) };
             ltp_coef = g.b_q14;
             ltp_index[..self.nb_subfr].copy_from_slice(&g.cbk_index[..self.nb_subfr]);
             per_index = g.periodicity_index;
@@ -522,10 +515,7 @@ impl SilkChannelEncoder {
         // we keep index 0 to stay byte-identical to the prior behaviour; the
         // reference's `round_loss = perc + nFramesPerPacket` term would raise it
         // even at zero loss, but that divergence is gated off here.
-        let ltp_scale_index = if self.packet_loss_perc > 0
-            && is_voiced
-            && cond_coding == CondCoding::Independently
-        {
+        let ltp_scale_index = if self.packet_loss_perc > 0 && is_voiced && cond_coding == CondCoding::Independently {
             // round_loss = PacketLoss_perc + nFramesPerPacket;
             // LTP_scaleIndex = LIMIT(round_loss * LTPredCodGain * 0.1, 0, 2)
             // (truncated toward zero on assignment to int8). `pred_gain_db`

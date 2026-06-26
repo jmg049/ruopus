@@ -3,17 +3,13 @@
 //!
 //! Two layers:
 //!
-//! - [`page`]-level: [`Page`]/[`PageReader`] parse a physical Ogg bitstream
-//!   with CRC verification and capture-pattern resynchronization;
-//!   [`PacketReader`] reassembles the packets of one logical bitstream
-//!   (including packets spanning pages); [`PageWriter`] does the reverse.
-//!   This layer is codec-agnostic - it will serve Vorbis and FLAC-in-Ogg as
+//! - [`page`]-level: [`Page`]/[`PageReader`] parse a physical Ogg bitstream with CRC verification and capture-pattern
+//!   resynchronization; [`PacketReader`] reassembles the packets of one logical bitstream (including packets spanning
+//!   pages); [`PageWriter`] does the reverse. This layer is codec-agnostic - it will serve Vorbis and FLAC-in-Ogg as
 //!   well as Opus.
-//! - Opus mapping: [`OpusHead`]/[`OpusTags`] header packets,
-//!   [`OggOpusReader`] (header parsing, per-packet granule reconstruction,
-//!   duration) and [`OggOpusWriter`] (conformant page layout: ID header alone
-//!   on the BOS page, comment header finishing its page, granule positions
-//!   accumulated from packet TOC durations).
+//! - Opus mapping: [`OpusHead`]/[`OpusTags`] header packets, [`OggOpusReader`] (header parsing, per-packet granule
+//!   reconstruction, duration) and [`OggOpusWriter`] (conformant page layout: ID header alone on the BOS page, comment
+//!   header finishing its page, granule positions accumulated from packet TOC durations).
 //!
 //! Both operate on in-memory byte slices, keeping the module `no_std` +
 //! `alloc`; std I/O adapters belong to higher-level crates.

@@ -27,6 +27,9 @@
 
 use alloc::vec::Vec;
 
+#[cfg(not(feature = "std"))]
+use crate::float::FloatExt;
+
 /// Precomputed twiddles for one MDCT family (`mdct_lookup`): the standard
 /// mode uses `n = 1920` with shifts 0..=3 for 20/10/5/2.5 ms blocks.
 #[derive(Debug, Clone)]
@@ -229,14 +232,61 @@ fn prerotate(f: &[f32], tw: &[f32], fc: &mut [(f32, f32)]) {
     }
 }
 
+// Reused MDCT scratch (`f` real, `fc`/`f2`/`time` complex). On `std` these are
+// thread-local so each transform avoids a fresh allocation; on `no_std` (no
+// thread locals) the take/put helpers fall back to allocating per call, which
+// is correct and keeps the hot-path code identical.
+#[cfg(feature = "std")]
 std::thread_local! {
-    /// Reused real scratch (`f`, the windowed/folded MDCT input).
     static SCRATCH_F: core::cell::RefCell<Vec<f32>> = const { core::cell::RefCell::new(Vec::new()) };
-    /// Reused complex scratch buffers (`fc`/`f2`/`time`); fully overwritten
-    /// each transform, so no per-call allocation or zeroing is needed.
     static SCRATCH_C1: core::cell::RefCell<Vec<(f32, f32)>> = const { core::cell::RefCell::new(Vec::new()) };
     static SCRATCH_C2: core::cell::RefCell<Vec<(f32, f32)>> = const { core::cell::RefCell::new(Vec::new()) };
 }
+
+#[cfg(feature = "std")]
+fn take_f() -> Vec<f32> {
+    SCRATCH_F.with(|s| core::mem::take(&mut *s.borrow_mut()))
+}
+#[cfg(not(feature = "std"))]
+fn take_f() -> Vec<f32> {
+    Vec::new()
+}
+#[cfg(feature = "std")]
+fn put_f(v: Vec<f32>) {
+    SCRATCH_F.with(|s| *s.borrow_mut() = v);
+}
+#[cfg(not(feature = "std"))]
+fn put_f(_v: Vec<f32>) {}
+
+#[cfg(feature = "std")]
+fn take_c1() -> Vec<(f32, f32)> {
+    SCRATCH_C1.with(|s| core::mem::take(&mut *s.borrow_mut()))
+}
+#[cfg(not(feature = "std"))]
+fn take_c1() -> Vec<(f32, f32)> {
+    Vec::new()
+}
+#[cfg(feature = "std")]
+fn put_c1(v: Vec<(f32, f32)>) {
+    SCRATCH_C1.with(|s| *s.borrow_mut() = v);
+}
+#[cfg(not(feature = "std"))]
+fn put_c1(_v: Vec<(f32, f32)>) {}
+
+#[cfg(feature = "std")]
+fn take_c2() -> Vec<(f32, f32)> {
+    SCRATCH_C2.with(|s| core::mem::take(&mut *s.borrow_mut()))
+}
+#[cfg(not(feature = "std"))]
+fn take_c2() -> Vec<(f32, f32)> {
+    Vec::new()
+}
+#[cfg(feature = "std")]
+fn put_c2(v: Vec<(f32, f32)>) {
+    SCRATCH_C2.with(|s| *s.borrow_mut() = v);
+}
+#[cfg(not(feature = "std"))]
+fn put_c2(_v: Vec<(f32, f32)>) {}
 
 impl MdctLookup {
     /// The backward (synthesis) MDCT (`clt_mdct_backward`).
@@ -265,7 +315,7 @@ impl MdctLookup {
         let sine = (2.0 * core::f64::consts::PI * 0.125 / n as f64) as f32;
 
         // Pre-rotate the strided spectral coefficients into N/4 complex bins.
-        let mut f2 = SCRATCH_C1.with(|s| core::mem::take(&mut *s.borrow_mut()));
+        let mut f2 = take_c1();
         f2.resize(n4, (0.0, 0.0));
         {
             let t = &self.trig;
@@ -280,15 +330,15 @@ impl MdctLookup {
         }
 
         // Inverse N/4 complex FFT (un-normalised) into the output buffer.
-        let mut time = SCRATCH_C2.with(|s| core::mem::take(&mut *s.borrow_mut()));
+        let mut time = take_c2();
         time.resize(n4, (0.0, 0.0));
         fft_inverse(&f2, &mut time);
         for (i, &(re, im)) in time.iter().enumerate() {
             out[(overlap >> 1) + 2 * i] = re;
             out[(overlap >> 1) + 2 * i + 1] = im;
         }
-        SCRATCH_C1.with(|s| *s.borrow_mut() = f2);
-        SCRATCH_C2.with(|s| *s.borrow_mut() = time);
+        put_c1(f2);
+        put_c2(time);
 
         // Post-rotate and de-shuffle from both ends at once, in place.
         {
@@ -354,7 +404,7 @@ impl MdctLookup {
         let sine = (2.0 * core::f64::consts::PI * 0.125 / n as f64) as f32;
 
         // Window, shuffle, fold the four conceptual blocks [a, b, c, d].
-        let mut f = SCRATCH_F.with(|s| core::mem::take(&mut *s.borrow_mut()));
+        let mut f = take_f();
         f.resize(n2, 0.0);
         {
             let half = overlap >> 1;
@@ -392,12 +442,12 @@ impl MdctLookup {
         }
 
         // Pre-rotation (folded twiddle complex multiply - see `fwd_pre`).
-        let mut fc = SCRATCH_C1.with(|s| core::mem::take(&mut *s.borrow_mut()));
+        let mut fc = take_c1();
         fc.resize(n4, (0.0, 0.0));
         prerotate(&f, &self.fwd_pre[shift], &mut fc);
 
         // N/4 complex FFT (downscales by 4/N).
-        let mut f2 = SCRATCH_C2.with(|s| core::mem::take(&mut *s.borrow_mut()));
+        let mut f2 = take_c2();
         f2.resize(n4, (0.0, 0.0));
         fft_forward(&fc, &mut f2);
 
@@ -412,9 +462,9 @@ impl MdctLookup {
             }
         }
 
-        SCRATCH_F.with(|s| *s.borrow_mut() = f);
-        SCRATCH_C1.with(|s| *s.borrow_mut() = fc);
-        SCRATCH_C2.with(|s| *s.borrow_mut() = f2);
+        put_f(f);
+        put_c1(fc);
+        put_c2(f2);
     }
 }
 

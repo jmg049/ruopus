@@ -9,12 +9,11 @@
 
 #![allow(dead_code, reason = "consumed incrementally as the SILK decoder stages land")]
 
-use crate::range::RangeDecoder;
-
 use super::math::{rshift_round, smlabb, smlawb, smulbb, smulwb};
 use super::tables::{
     STEREO_ONLY_CODE_MID_ICDF, STEREO_PRED_JOINT_ICDF, STEREO_PRED_QUANT_Q13, UNIFORM3_ICDF, UNIFORM5_ICDF,
 };
+use crate::range::RangeDecoder;
 
 const STEREO_INTERP_LEN_MS: i32 = 8;
 /// `SILK_FIX_CONST(0.5 / STEREO_QUANT_SUB_STEPS, 16)`.

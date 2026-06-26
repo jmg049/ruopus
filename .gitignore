@@ -1,5 +1,4 @@
 /target
-Cargo.lock
 /tests/vectors/
 
 # Python build / test artifacts

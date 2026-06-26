@@ -11,14 +11,13 @@
 
 use alloc::vec;
 
-use crate::range::RangeDecoder;
-
 use super::indices::{CondCoding, EcPrevState, MAX_LPC_ORDER, SideInfoIndices, TYPE_VOICED, decode_indices};
 use super::lpc::lpc_analysis_filter;
 use super::math::{add_sat32, div32_var_q, inverse32_var_q, lshift_sat32, rshift_round, smlawb, smulwb, smulww};
 use super::params::{DecoderControl, LTP_ORDER, ParamState, decode_parameters};
 use super::pulses::decode_pulses;
 use super::tables::QUANTIZATION_OFFSETS_Q10;
+use crate::range::RangeDecoder;
 
 /// `MAX_FRAME_LENGTH`: 20 ms at 16 kHz.
 pub(crate) const MAX_FRAME_LENGTH: usize = 320;

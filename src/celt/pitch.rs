@@ -4,12 +4,10 @@
 //! attenuate the strong harmonic structure of voiced/tonal signals before
 //! the MDCT, leaving a smaller residual to code. The chain is:
 //!
-//! 1. [`pitch_downsample`] - low-pass and decimate by two (a 4-tap LPC
-//!    whitening filter plus a zero), folding both channels to mono.
-//! 2. [`pitch_search`] - a two-stage decimated normalised cross-correlation
-//!    giving a coarse integer lag.
-//! 3. [`remove_doubling`] - refine the lag, rejecting octave errors, and
-//!    return the pitch gain.
+//! 1. [`pitch_downsample`] - low-pass and decimate by two (a 4-tap LPC whitening filter plus a zero), folding both
+//!    channels to mono.
+//! 2. [`pitch_search`] - a two-stage decimated normalised cross-correlation giving a coarse integer lag.
+//! 3. [`remove_doubling`] - refine the lag, rejecting octave errors, and return the pitch gain.
 //!
 //! Everything here is the float build; the values feed only encoder
 //! *decisions*, so they need not be bit-exact with the fixed-point build.
@@ -342,8 +340,9 @@ pub(crate) fn remove_doubling(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec::Vec;
+
+    use super::*;
 
     #[test]
     fn inner_prod_matches_manual() {

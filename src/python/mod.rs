@@ -42,33 +42,25 @@ pub fn version() -> &'static str {
 #[pymodule]
 mod opus_native {
     #[pymodule_export]
-    use super::version;
-
-    #[pymodule_export]
-    use super::enums::{Application, Bandwidth, FrameSize, Mode, Signal};
-
-    #[pymodule_export]
-    use super::errors::{EncodeError, OggError, OpusError, PacketError};
-
-    #[pymodule_export]
     use super::decoder::OpusDecoder;
-
     #[pymodule_export]
     use super::encoder::OpusEncoder;
-
     #[pymodule_export]
-    use super::ogg::{OpusHead, decode_ogg_opus, encode_ogg_opus};
-
+    use super::enums::{Application, Bandwidth, FrameSize, Mode, Signal};
     #[pymodule_export]
-    use super::packet::{Packet, Toc};
-
-    #[pymodule_export]
-    use super::multistream::MultistreamDecoder;
-
+    use super::errors::{EncodeError, OggError, OpusError, PacketError};
     // The `lowlevel` submodule (declared as a sibling pymodule below, the form
     // PyO3's declarative macros and introspection support).
     #[pymodule_export]
     use super::lowlevel_module;
+    #[pymodule_export]
+    use super::multistream::MultistreamDecoder;
+    #[pymodule_export]
+    use super::ogg::{OpusHead, decode_ogg_opus, encode_ogg_opus};
+    #[pymodule_export]
+    use super::packet::{Packet, Toc};
+    #[pymodule_export]
+    use super::version;
 }
 
 /// Direct access to the SILK, LPC, and CELT layers beneath the Opus packet
@@ -77,14 +69,12 @@ mod opus_native {
 #[pymodule(name = "lowlevel")]
 mod lowlevel_module {
     #[pymodule_export]
-    use super::lowlevel::silk::{DecControl, SilkDecoder, SilkEncoder, SilkStereoEncoder};
-
-    #[pymodule_export]
     use super::lowlevel::celt::{CeltDecoder, CeltEncoder};
-
     #[pymodule_export]
     use super::lowlevel::lpc::{
         LpcCoefficients, compute_autocorrelation, estimate_pitch, levinson_durbin, lpc_analysis, lpc_residual,
         lpc_residual_stateful, lpc_synthesis, lpc_synthesis_stateful, ltp_residual, ltp_synthesis,
     };
+    #[pymodule_export]
+    use super::lowlevel::silk::{DecControl, SilkDecoder, SilkEncoder, SilkStereoEncoder};
 }

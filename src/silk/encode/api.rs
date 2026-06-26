@@ -17,12 +17,11 @@ extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::range::RangeEncoder;
-
 use super::super::indices::CondCoding;
 use super::super::tables::{LBRR_FLAGS_2_ICDF, LBRR_FLAGS_3_ICDF};
 use super::frame::SilkChannelEncoder;
 use super::stereo::{StereoEncState, lr_to_ms, stereo_encode_mid_only, stereo_encode_pred};
+use crate::range::RangeEncoder;
 
 /// A SILK encoder for one mono stream.
 #[derive(Clone)]
@@ -194,7 +193,11 @@ impl SilkEncoder {
             for i in 0..n_frames {
                 // The first frame of a packet is coded independently; later
                 // frames condition their gains/lag on the previous frame.
-                let cond = if i == 0 { CondCoding::Independently } else { CondCoding::Conditionally };
+                let cond = if i == 0 {
+                    CondCoding::Independently
+                } else {
+                    CondCoding::Conditionally
+                };
                 self.ch
                     .encode_frame(enc, &input[i * frame_length..(i + 1) * frame_length], cond, max_bits);
             }
@@ -222,7 +225,11 @@ impl SilkEncoder {
                 let mut trial = enc.clone();
                 let mut ch_trial = self.ch.clone();
                 for (i, (ind, pulses)) in self.lbrr_prev.iter().enumerate() {
-                    let cond = if i == 0 { CondCoding::Independently } else { CondCoding::Conditionally };
+                    let cond = if i == 0 {
+                        CondCoding::Independently
+                    } else {
+                        CondCoding::Conditionally
+                    };
                     ch_trial.emit_frame(&mut trial, ind, pulses, cond, true);
                 }
                 trial.tell() as i32 - enc.tell() as i32
@@ -240,7 +247,11 @@ impl SilkEncoder {
         }
         enc.encode_bit_logp(have_lbrr, 1);
         if have_lbrr && n_frames > 1 {
-            let table: &[u8] = if n_frames == 2 { &LBRR_FLAGS_2_ICDF } else { &LBRR_FLAGS_3_ICDF };
+            let table: &[u8] = if n_frames == 2 {
+                &LBRR_FLAGS_2_ICDF
+            } else {
+                &LBRR_FLAGS_3_ICDF
+            };
             let symbol = (1usize << n_frames) - 1; // all frames flagged
             enc.encode_icdf(symbol - 1, table, 8);
         }
@@ -250,7 +261,11 @@ impl SilkEncoder {
         if have_lbrr {
             let prev = core::mem::take(&mut self.lbrr_prev);
             for (i, (ind, pulses)) in prev.iter().enumerate() {
-                let cond = if i == 0 { CondCoding::Independently } else { CondCoding::Conditionally };
+                let cond = if i == 0 {
+                    CondCoding::Independently
+                } else {
+                    CondCoding::Conditionally
+                };
                 self.ch.emit_frame(enc, ind, pulses, cond, true);
             }
         } else {
@@ -280,7 +295,11 @@ impl SilkEncoder {
         // pass is disabled) is stashed for the next packet to emit.
         let mut current: Vec<(super::super::indices::SideInfoIndices, Vec<i8>)> = Vec::with_capacity(n_frames);
         for i in 0..n_frames {
-            let cond = if i == 0 { CondCoding::Independently } else { CondCoding::Conditionally };
+            let cond = if i == 0 {
+                CondCoding::Independently
+            } else {
+                CondCoding::Conditionally
+            };
             let f = &input[i * frame_length..(i + 1) * frame_length];
             let ((ind, pulses), lbrr) = self.ch.encode_frame_capture(enc, f, cond, max_bits);
             current.push(lbrr.unwrap_or((ind, pulses)));
@@ -545,12 +564,19 @@ impl SilkStereoEncoder {
                     if f.mid_only {
                         stereo_encode_mid_only(&mut trial, 1);
                     }
-                    let cond = if i == 0 { CondCoding::Independently } else { CondCoding::Conditionally };
+                    let cond = if i == 0 {
+                        CondCoding::Independently
+                    } else {
+                        CondCoding::Conditionally
+                    };
                     mid_t.emit_frame(&mut trial, &f.mid.0, &f.mid.1, cond, true);
                     if let Some((sind, spulses)) = &f.side {
                         let prev_side = i > 0 && !self.lbrr_prev[i - 1].mid_only;
-                        let side_cond =
-                            if prev_side { CondCoding::Conditionally } else { CondCoding::Independently };
+                        let side_cond = if prev_side {
+                            CondCoding::Conditionally
+                        } else {
+                            CondCoding::Independently
+                        };
                         side_t.emit_frame(&mut trial, sind, spulses, side_cond, true);
                     }
                 }
@@ -570,7 +596,11 @@ impl SilkStereoEncoder {
         }
         enc.encode_bit_logp(have_lbrr, 1);
         if have_lbrr && n_frames > 1 {
-            let table: &[u8] = if n_frames == 2 { &LBRR_FLAGS_2_ICDF } else { &LBRR_FLAGS_3_ICDF };
+            let table: &[u8] = if n_frames == 2 {
+                &LBRR_FLAGS_2_ICDF
+            } else {
+                &LBRR_FLAGS_3_ICDF
+            };
             let symbol = (1usize << n_frames) - 1; // mid: all frames flagged
             enc.encode_icdf(symbol - 1, table, 8);
         }
@@ -587,7 +617,11 @@ impl SilkStereoEncoder {
         let side_has_lbrr = side_lbrr.iter().any(|&b| b);
         enc.encode_bit_logp(have_lbrr && side_has_lbrr, 1);
         if have_lbrr && side_has_lbrr && n_frames > 1 {
-            let table: &[u8] = if n_frames == 2 { &LBRR_FLAGS_2_ICDF } else { &LBRR_FLAGS_3_ICDF };
+            let table: &[u8] = if n_frames == 2 {
+                &LBRR_FLAGS_2_ICDF
+            } else {
+                &LBRR_FLAGS_3_ICDF
+            };
             let mut symbol = 0usize;
             for (i, &b) in side_lbrr.iter().enumerate() {
                 if b {
@@ -609,14 +643,22 @@ impl SilkStereoEncoder {
                 if !side_lbrr_i {
                     stereo_encode_mid_only(&mut *enc, 1);
                 }
-                let cond = if i == 0 { CondCoding::Independently } else { CondCoding::Conditionally };
+                let cond = if i == 0 {
+                    CondCoding::Independently
+                } else {
+                    CondCoding::Conditionally
+                };
                 self.mid.emit_frame(&mut *enc, &f.mid.0, &f.mid.1, cond, true);
                 if let Some((sind, spulses)) = &f.side {
                     // Side cond mirrors the decoder's LBRR rule: conditional only
                     // when the *previous* LBRR frame also coded a side channel
                     // (side `lbrr_flags[i-1]` set), else independent.
                     let prev_side = i > 0 && !prev[i - 1].mid_only;
-                    let side_cond = if prev_side { CondCoding::Conditionally } else { CondCoding::Independently };
+                    let side_cond = if prev_side {
+                        CondCoding::Conditionally
+                    } else {
+                        CondCoding::Independently
+                    };
                     self.side.emit_frame(&mut *enc, sind, spulses, side_cond, true);
                 }
             }
@@ -689,10 +731,11 @@ impl SilkStereoEncoder {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use super::*;
     use crate::range::RangeDecoder;
     use crate::silk::api::{DecControl, SilkDecoder};
-    use alloc::vec;
 
     /// A mono SILK payload decodes through the full `SilkDecoder` API and
     /// reproduces the encoder's reconstruction. With the internal rate equal

@@ -297,9 +297,10 @@ pub(crate) fn quant_ltp_gains(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec;
     use alloc::vec::Vec;
+
+    use super::*;
 
     /// A strongly periodic residual yields a positive LTP prediction gain,
     /// and the quantised taps it selects are exactly the decoder's codebook

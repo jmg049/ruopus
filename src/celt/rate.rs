@@ -5,16 +5,12 @@
 //! coded band range, and a handful of explicitly coded parameters (boosts,
 //! trim, skips, stereo flags). The derivation, in order:
 //!
-//! 1. Interpolate between the static quality vectors
-//!    ([`super::tables::BAND_ALLOCATION`]) to find the highest quality that
-//!    fits `total`, then bisect 1/64th steps between it and the next.
-//! 2. Working from the top band down, decide which bands are *skipped*
-//!    (their bits redistributed downward) - one explicitly coded bit per
-//!    skippable band.
-//! 3. Code the intensity-stereo band boundary and dual-stereo flag (stereo
-//!    frames only).
-//! 4. Split each band's budget between fine energy
-//!    ([`Allocation::fine_quant`]) and PVQ shape bits
+//! 1. Interpolate between the static quality vectors ([`super::tables::BAND_ALLOCATION`]) to find the highest quality
+//!    that fits `total`, then bisect 1/64th steps between it and the next.
+//! 2. Working from the top band down, decide which bands are *skipped* (their bits redistributed downward) - one
+//!    explicitly coded bit per skippable band.
+//! 3. Code the intensity-stereo band boundary and dual-stereo flag (stereo frames only).
+//! 4. Split each band's budget between fine energy ([`Allocation::fine_quant`]) and PVQ shape bits
 //!    ([`Allocation::shape_bits`]), with capping/excess rebalancing.
 //!
 //! All quantities are in 1/8-bit units (`BITRES = 3`) unless noted.
@@ -169,10 +165,7 @@ pub struct Allocation {
 /// `offsets` are the per-band boosts in 1/8 bits decoded by the caller
 /// (dynalloc), `alloc_trim` the decoded trim parameter (0..=10, default 5),
 /// `total` the bits available for the remainder of the frame in 1/8 bits.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "mirrors the reference allocation signature"
-)]
+#[allow(clippy::too_many_arguments, reason = "mirrors the reference allocation signature")]
 #[must_use]
 pub fn compute_allocation(
     ec: &mut AllocEc,

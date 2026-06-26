@@ -5,13 +5,11 @@
 //! the choice from a light-weight, FFT-free analysis of the 48 kHz time-domain
 //! frame (keeping the core crate dependency-free):
 //!
-//! * a 6-band energy split (band edges ~4 / 6 / 8 / 12 kHz) from cheap one-pole
-//!   filters;
-//! * a spectral tilt (low-band vs high-band energy ratio): speech rolls off
-//!   steeply above ~4 kHz, music keeps energy up to 20 kHz;
-//! * a tonality estimate from the normalised one-lag autocorrelation: a high
-//!   lag-1 correlation means a smooth, low-pass (voiced/tonal) signal, a low one
-//!   means broadband/noisy content;
+//! * a 6-band energy split (band edges ~4 / 6 / 8 / 12 kHz) from cheap one-pole filters;
+//! * a spectral tilt (low-band vs high-band energy ratio): speech rolls off steeply above ~4 kHz, music keeps energy up
+//!   to 20 kHz;
+//! * a tonality estimate from the normalised one-lag autocorrelation: a high lag-1 correlation means a smooth, low-pass
+//!   (voiced/tonal) signal, a low one means broadband/noisy content;
 //! * a zero-crossing rate, a cheap voiced/unvoiced and low/high-frequency proxy.
 //!
 //! These combine into [`FrameAnalysis::music_probability`] (0 = clearly speech,
@@ -154,12 +152,12 @@ pub(crate) fn analyze_frame(pcm: &[f32], channels: usize) -> FrameAnalysis {
     // Combine the cues into a single probability. Each term pushes toward music
     // (1.0) or speech (0.0); we start neutral and accumulate evidence.
     //
-    //  * Energy above 8 kHz is the strongest music cue - speech has almost
-    //    none (it is band-limited to ~4 kHz, wideband to ~7 kHz).
+    //  * Energy above 8 kHz is the strongest music cue - speech has almost none (it is band-limited to ~4 kHz, wideband
+    //    to ~7 kHz).
     //  * Energy in the top octave (>12 kHz) is decisive for fullband music.
     //  * A dominant <4 kHz low band is a speech cue.
-    //  * Very high lag-1 correlation with low ZCR is a strongly voiced/tonal
-    //    cue (could be either, so weighted lightly toward speech).
+    //  * Very high lag-1 correlation with low ZCR is a strongly voiced/tonal cue (could be either, so weighted lightly
+    //    toward speech).
     let mut p = 0.5f32;
     p += 1.6 * high_frac; // up to +~1.6 toward music
     p += 2.0 * top_frac; // top octave is decisive
@@ -183,8 +181,9 @@ pub(crate) fn analyze_frame(pcm: &[f32], channels: usize) -> FrameAnalysis {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec::Vec;
+
+    use super::*;
 
     fn tone(freqs: &[(f32, f32)], n: usize) -> Vec<f32> {
         (0..n)

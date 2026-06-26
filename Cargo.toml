@@ -6,23 +6,23 @@ rust-version = "1.85"
 authors = ["Jack Geraghty <jgeraghty049@gmail.com>"]
 license = "MIT"
 readme = "README.md"
-description = "A pure-Rust implementation of the Opus audio codec (RFC 6716). No FFI, no dependencies; unsafe confined to documented SIMD kernels."
+description = "A pure-Rust implementation of the Opus audio codec (RFC 6716). No FFI; unsafe confined to documented SIMD kernels."
 repository = "https://github.com/jmg049/opus_native"
 documentation = "https://docs.rs/opus_native"
 keywords = ["opus", "audio", "codec", "decoder", "rfc6716"]
 categories = ["multimedia::audio", "multimedia::encoding", "no-std"]
-exclude = ["/tests/vectors/*", "/target/*"]
+exclude = ["/manual/*", "/tests/*", "/examples/*", "/benches/*", "/tools/*", "/target/*"]
 
 [features]
-default = ["std", "experimental-codec", "spectrograms"]
-# Implements std::error::Error and enables heap-allocating conveniences.
-# The crate core is no_std + alloc.
+default = ["std", "spectrograms"]
+# Float transcendentals via the std `f32`/`f64` methods and `std::error::Error`
+# impls. The codec core is otherwise `no_std` + `alloc`; without `std`, enable
+# `libm` instead for the float math.
 std = []
-# The pre-conformance experimental codec (LPC/SILK-style frame coding, mode
-# detection, hybrid crossover, mid/side) ported from audio_samples. Not an
-# RFC 6716 bitstream; see the `experimental` module docs. Requires `std` for
-# float math.
-experimental-codec = ["std"]
+# `no_std` floating-point backend (sin/cos/sqrt/exp/...). A `no_std` consumer
+# builds with `default-features = false, features = ["libm"]`. Exactly one of
+# `std` or `libm` must be enabled (see the crate-root `compile_error!`).
+libm = ["dep:libm"]
 # Accelerated FFT backend for the CELT MDCT seam, provided by the
 # `spectrograms` crate (rustfft-based plans) - ~10× faster decode, on by
 # default: the codec targets near-real-time use. Disable for a zero-
@@ -35,7 +35,7 @@ spectrograms = ["std", "dep:spectrograms"]
 # `cargo build --features python`) pulls in pyo3 + numpy and compiles the
 # `#[pymodule]`. Enables the full public surface so Python sees everything a
 # Rust user can.
-python = ["std", "experimental-codec", "spectrograms", "dep:pyo3", "dep:numpy"]
+python = ["std", "spectrograms", "dep:pyo3", "dep:numpy"]
 
 [lib]
 name = "opus_native"
@@ -45,12 +45,14 @@ name = "opus_native"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+# Pure-Rust no_std float transcendentals; pulled in only by the `libm` feature.
+libm = { version = "0.2", optional = true }
 numpy = { version = "0.29.0", optional = true }
 # No `abi3`: per-version wheels (cp39…cp313). abi3 would forbid subclassing
 # `PyException` below Python 3.12, which the exception hierarchy needs.
 pyo3 = { version = "0.29.0", default-features = false, features = ["extension-module", "multiple-pymethods", "experimental-inspect"], optional = true }
 # The codec core has zero required runtime dependencies.
-spectrograms = { version = "1.4", path = "../../rust/spectrograms", optional = true, default-features = false, features = ["realfft"] }
+spectrograms = { version = "1.4.3", optional = true, default-features = false, features = ["realfft"] }
 
 [dev-dependencies]
 # libopus via FFI (links the system libopus), for the comparison benchmark only.

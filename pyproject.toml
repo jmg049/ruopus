@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "opus_native"
-description = "A pure-Rust implementation of the Opus audio codec (RFC 6716) - fast, dependency-free, with first-class NumPy interop."
+description = "A pure-Rust implementation of the Opus audio codec (RFC 6716) - fast, with first-class NumPy interop."
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Jack Geraghty (jmg049)", email = "jgeraghty049@gmail.com" }]

@@ -266,7 +266,6 @@ impl<'a> RangeDecoder<'a> {
     /// Used by the CELT silence path, which "pretends to have read all the
     /// remaining bits" (RFC 6716 §4.3) so downstream budget checks behave
     /// as required.
-    #[cfg(feature = "std")]
     pub(crate) fn force_tell(&mut self, bits: u32) {
         let current = self.tell();
         // On a valid stream the silence flag is read early, so `current <= bits`

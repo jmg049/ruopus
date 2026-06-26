@@ -328,8 +328,9 @@ fn update_state(state: &mut Vec<f32>, samples: &[f32], order: usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec::Vec;
+
+    use super::*;
 
     fn sine(n: usize, freq: f32, rate: f32) -> Vec<f32> {
         (0..n)

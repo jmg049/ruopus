@@ -13,8 +13,6 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::range::RangeEncoder;
-
 use super::bands::encode::quant_all_bands_enc;
 use super::bands::haar1;
 use super::decoder::{COMB_GAINS, TF_SELECT_TABLE};
@@ -26,6 +24,7 @@ use super::pitch::{COMBFILTER_MAXPERIOD, COMBFILTER_MINPERIOD, pitch_downsample,
 use super::rate::{AllocEc, BITRES, compute_allocation, init_caps};
 use super::tables::WINDOW120;
 use super::vq::Spread;
+use crate::range::RangeEncoder;
 
 /// Samples per shortest MDCT block.
 const SHORT_MDCT_SIZE: usize = 120;
@@ -253,9 +252,7 @@ impl CeltEncoder {
         // to whiten the harmonic structure, and return the decision to code.
         // Runs before the transient analysis and MDCT, which both see the
         // filtered signal (matching the reference order).
-        let (pf_on, pitch_index, qg) = {
-            self.prefilter_analysis(&mut inputs, in_len, n, channels, nb_bytes)
-        };
+        let (pf_on, pitch_index, qg) = { self.prefilter_analysis(&mut inputs, in_len, n, channels, nb_bytes) };
 
         // The MDCT overlap for the next frame is the filtered tail.
         for c in 0..channels {

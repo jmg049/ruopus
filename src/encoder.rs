@@ -1206,9 +1206,10 @@ pub fn encode_ogg_opus(pcm: &[f32], channels: usize, bitrate: u32) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec::Vec;
+
     use super::*;
     use crate::{OpusDecoder, decode_ogg_opus};
-    use alloc::vec::Vec;
 
     /// `reset` drops all cross-frame state: a fresh encoder and a
     /// reset-after-use encoder must code the same frame to identical bytes and

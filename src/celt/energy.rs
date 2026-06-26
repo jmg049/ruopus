@@ -3,22 +3,19 @@
 //! CELT transmits each band's energy in base-2 log units ("DB" in the
 //! reference) in up to three refinement stages:
 //!
-//! 1. **Coarse** (§4.3.2.1): 6 dB resolution, predicted in time (from the
-//!    previous frame, unless the frame is *intra*) and in frequency (from the
-//!    previous band), with the prediction error Laplace-coded.
-//! 2. **Fine** (§4.3.2.2): per-band refinement bits assigned by the bit
-//!    allocation, read as raw bits.
-//! 3. **Finalise**: any bits left over at the very end of the frame add one
-//!    extra half-resolution bit per band per channel, by priority.
+//! 1. **Coarse** (§4.3.2.1): 6 dB resolution, predicted in time (from the previous frame, unless the frame is *intra*)
+//!    and in frequency (from the previous band), with the prediction error Laplace-coded.
+//! 2. **Fine** (§4.3.2.2): per-band refinement bits assigned by the bit allocation, read as raw bits.
+//! 3. **Finalise**: any bits left over at the very end of the frame add one extra half-resolution bit per band per
+//!    channel, by priority.
 //!
 //! Energies persist across frames in [`EnergyState`] - the time-domain
 //! predictor's memory. The float arithmetic here mirrors the reference float
 //! build (the test vectors accept either build's output).
 
-use crate::range::RangeDecoder;
-
 use super::laplace::ec_laplace_decode;
 use super::modes::{BETA_COEF, BETA_INTRA, E_PROB_MODEL, MAX_FINE_BITS, NB_EBANDS, PRED_COEF};
+use crate::range::RangeDecoder;
 
 /// ICDF for the 2-bit fallback coarse-energy code (`small_energy_icdf`).
 const SMALL_ENERGY_ICDF: [u8; 3] = [2, 1, 0];
