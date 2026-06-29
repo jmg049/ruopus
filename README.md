@@ -1,5 +1,11 @@
 # ruopus
 
+[![Crates.io](https://img.shields.io/crates/v/ruopus.svg)](https://crates.io/crates/ruopus)
+[![docs.rs](https://img.shields.io/docsrs/ruopus)](https://docs.rs/ruopus)
+[![PyPI](https://img.shields.io/pypi/v/ruopus.svg)](https://pypi.org/project/ruopus/)
+[![MSRV](https://img.shields.io/badge/rustc-1.85%2B-orange.svg)](https://blog.rust-lang.org/2025/02/20/Rust-1.85.0.html)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A pure-Rust implementation of the [Opus audio codec](https://opus-codec.org/)
 ([RFC 6716](https://www.rfc-editor.org/rfc/rfc6716)): decoder and encoder, with
 no C and no FFI.
@@ -8,6 +14,9 @@ no C and no FFI.
 [Miri](https://github.com/rust-lang/miri). Runs on stable Rust**
 
 > The decoder passes the official Opus conformance vectors, and the encoder produces standard Opus that libopus and ffmpeg decode.
+
+Python bindings are available on [PyPI](https://pypi.org/project/ruopus/).
+
 
 ## Overview
 
@@ -49,6 +58,32 @@ let packet = enc.encode_auto(&pcm_960, 4000)?;
 // Whole Ogg Opus files.
 let (pcm, head) = ruopus::decode_ogg_opus(&bytes)?;
 let ogg = ruopus::encode_ogg_opus(&pcm, 2, 96_000);
+```
+
+## Python
+
+Install from [PyPI](https://pypi.org/project/ruopus/):
+
+```sh
+pip install ruopus
+```
+
+The bindings wrap `OpusDecoder` and `OpusEncoder` with NumPy interop — decoded
+PCM is returned as a `(frames, channels) float32` array; the encoder accepts the
+same shape or a flat interleaved array.
+
+```python
+import numpy as np
+import ruopus
+
+# Decode
+dec = ruopus.OpusDecoder(channels=2, sample_rate=48_000)
+pcm = dec.decode_packet(packet)          # ndarray (frames, 2), float32
+
+# Encode
+enc = ruopus.OpusEncoder(channels=2, bitrate=64_000)
+frame = np.zeros((960, 2), dtype=np.float32)   # 20 ms at 48 kHz
+packet = enc.encode(frame)               # bytes
 ```
 
 ## Performance
