@@ -58,10 +58,6 @@ pub use encoder::{Application, EncodeError, OpusEncoder, Signal, encode_ogg_opus
 pub use multistream::MultistreamDecoder;
 #[cfg(feature = "std")]
 pub use silk::encode::api::{SilkEncoder, SilkStereoEncoder};
-// General LPC/pitch DSP utilities, exposed only through the Python `lowlevel`
-// bindings.
-#[cfg(feature = "python")]
-pub(crate) mod lpc;
 pub mod ogg;
 pub mod packet;
 pub mod range;

@@ -5,12 +5,9 @@ A pure-Rust implementation of the [Opus audio codec](https://opus-codec.org/)
 no C and no FFI.
 
 **Pure Rust. `unsafe` only in a few SIMD kernels, every one checked under
-[Miri](https://github.com/rust-lang/miri). Runs on stable Rust, including
-`wasm32`.**
+[Miri](https://github.com/rust-lang/miri). Runs on stable Rust**
 
-> Pre-release: the API is not yet stable (0.x). The decoder passes the official
-> Opus conformance vectors, and the encoder produces standard Opus that libopus
-> and ffmpeg decode.
+> The decoder passes the official Opus conformance vectors, and the encoder produces standard Opus that libopus and ffmpeg decode.
 
 ## Overview
 
