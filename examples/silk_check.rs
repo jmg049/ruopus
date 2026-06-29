@@ -1,8 +1,8 @@
 //! SILK-mode round-trip check: our OpusEncoder::encode_silk -> our decoder,
 //! plus a .bit dump (with recorded final ranges) for opus_demo / libopus
 //! interop verification (`opus_demo -d 16000 1 ours_silk.bit out.raw`).
-use opus_native::packet::Bandwidth;
-use opus_native::{OpusDecoder, OpusEncoder};
+use opus_rs::packet::Bandwidth;
+use opus_rs::{OpusDecoder, OpusEncoder};
 
 fn run(bw: Bandwidth, frame_ms: usize, bit_path: &str) -> usize {
     let spf = frame_ms * 48; // samples per frame at 48 kHz (mono)

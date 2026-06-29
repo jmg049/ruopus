@@ -5,7 +5,7 @@
 //!
 //!   cargo run --release --example fuzz_decode --features std -- 500000
 
-use opus_native::{Bandwidth, OpusDecoder, OpusEncoder};
+use opus_rs::{Bandwidth, OpusDecoder, OpusEncoder};
 
 struct Rng(u64);
 impl Rng {

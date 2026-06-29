@@ -1,4 +1,4 @@
-//! The `opus_native.lowlevel` submodule: direct access to the SILK and CELT
+//! The `opus_rs.lowlevel` submodule: direct access to the SILK and CELT
 //! layers beneath the Opus packet codec. These are advanced building blocks;
 //! ordinary use should prefer the top-level `OpusEncoder`/`OpusDecoder`.
 

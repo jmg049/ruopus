@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from opus_native import (
+from opus_rs import (
     Bandwidth,
     FrameSize,
     Mode,

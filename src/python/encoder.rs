@@ -1,4 +1,4 @@
-//! The Opus encoder, exposed to Python as `opus_native.OpusEncoder`.
+//! The Opus encoder, exposed to Python as `opus_rs.OpusEncoder`.
 
 use numpy::PyReadonlyArrayDyn;
 use pyo3::exceptions::PyValueError;
@@ -34,11 +34,11 @@ use super::numpy_io::borrow_interleaved_f32;
 ///
 /// Examples
 /// --------
-/// >>> import numpy as np, opus_native
-/// >>> enc = opus_native.OpusEncoder(2, bitrate=64000)
+/// >>> import numpy as np, opus_rs
+/// >>> enc = opus_rs.OpusEncoder(2, bitrate=64000)
 /// >>> frame = np.zeros((960, 2), dtype=np.float32)   # 20 ms stereo at 48 kHz
 /// >>> packet = enc.encode(frame)
-#[pyclass(module = "opus_native", name = "OpusEncoder")]
+#[pyclass(module = "opus_rs", name = "OpusEncoder")]
 pub struct OpusEncoder {
     inner: crate::encoder::OpusEncoder,
     channels: usize,

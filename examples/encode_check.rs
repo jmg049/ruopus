@@ -1,7 +1,7 @@
 //! Round-trip check: our CELT encoder -> our decoder, plus .bit dumps
 //! (with recorded final ranges) for opus_demo / libopus verification.
-use opus_native::OpusDecoder;
-use opus_native::celt::encoder::CeltEncoder;
+use opus_rs::OpusDecoder;
+use opus_rs::celt::encoder::CeltEncoder;
 
 /// Runs one encoder/decoder round trip at the given frame size and writes
 /// an opus_demo-format bitstream dump. Returns the number of final-range

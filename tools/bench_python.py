@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark the opus_native Python bindings.
+"""Benchmark the opus_rs Python bindings.
 
 Reports real numbers for the binding's performance claims:
 
@@ -22,8 +22,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
-import opus_native
-from opus_native import OpusDecoder, OpusEncoder
+import opus_rs
+from opus_rs import OpusDecoder, OpusEncoder
 
 SR = 48000
 FRAME = 960  # 20 ms at 48 kHz
@@ -104,7 +104,7 @@ def bench_zero_copy() -> None:
     output is large. ``arr.copy()`` is exactly the per-decode cost the move-out
     avoids.
     """
-    from opus_native import decode_ogg_opus, encode_ogg_opus
+    from opus_rs import decode_ogg_opus, encode_ogg_opus
 
     seconds = 10
     n = SR * seconds
@@ -140,7 +140,7 @@ def bench_threads(packets: list[bytes]) -> None:
 
 
 def main() -> None:
-    print(f"opus_native {opus_native.version()}  |  {CHANNELS}ch {SR} Hz, "
+    print(f"opus_rs {opus_rs.version()}  |  {CHANNELS}ch {SR} Hz, "
           f"{N_FRAMES} x {FRAME / SR * 1000:.0f} ms frames\n")
     packets = make_corpus()
     avg_bytes = statistics.mean(len(p) for p in packets)

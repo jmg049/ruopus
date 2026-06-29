@@ -10,7 +10,7 @@ Run: python examples/python/05_multistream.py
 
 import numpy as np
 
-from opus_native import MultistreamDecoder, OpusEncoder
+from opus_rs import MultistreamDecoder, OpusEncoder
 
 SR = 48000
 FRAME = 960  # 20 ms

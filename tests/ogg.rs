@@ -1,7 +1,7 @@
 //! Ogg container tests: page round-trips, reassembly edge cases mandated by
 //! RFC 3533/7845, and interop against a real libopus/ffmpeg-produced file.
 
-use opus_native::ogg::{
+use opus_rs::ogg::{
     NO_GRANULE, OggOpusReader, OggOpusWriter, OpusHead, OpusTags, PacketReader, Page, PageReader, PageWriter,
 };
 
@@ -56,7 +56,7 @@ fn ffmpeg_file_duration_and_packets() {
     let mut granules = Vec::new();
     let mut saw_eos = false;
     while let Some(pkt) = reader.next() {
-        let parsed = opus_native::Packet::parse(&pkt.data).expect("valid Opus packet");
+        let parsed = opus_rs::Packet::parse(&pkt.data).expect("valid Opus packet");
         assert_eq!(parsed.toc().channels(), 1);
         granules.push(pkt.granule_position);
         saw_eos = pkt.eos;
@@ -81,11 +81,11 @@ fn fake_packet(len: usize, fill: u8) -> Vec<u8> {
 fn ogg_opus_write_read_round_trip() {
     let head = OpusHead::family0(1, 312, 48_000);
     let mut tags = OpusTags {
-        vendor: b"opus_native test".to_vec(),
+        vendor: b"opus_rs test".to_vec(),
         comments: Vec::new(),
     };
     tags.push("TITLE", "Round Trip");
-    tags.push("artist", "opus_native");
+    tags.push("artist", "opus_rs");
 
     let packets: Vec<Vec<u8>> = (0..7).map(|i| fake_packet(40 + i * 13, i as u8)).collect();
 
@@ -98,7 +98,7 @@ fn ogg_opus_write_read_round_trip() {
     let mut reader = OggOpusReader::new(&file).expect("readable");
     assert_eq!(reader.head(), &head);
     assert_eq!(reader.tags().get("title").as_deref(), Some("Round Trip"));
-    assert_eq!(reader.tags().get("ARTIST").as_deref(), Some("opus_native"));
+    assert_eq!(reader.tags().get("ARTIST").as_deref(), Some("opus_rs"));
 
     let mut got = Vec::new();
     let mut granules = Vec::new();
@@ -251,7 +251,7 @@ fn opus_head_round_trips_all_families() {
         pre_skip: 312,
         input_sample_rate: 48_000,
         output_gain_q8: -256, // -1 dB
-        channel_mapping: opus_native::ogg::ChannelMapping::Table {
+        channel_mapping: opus_rs::ogg::ChannelMapping::Table {
             family: 1,
             stream_count: 4,
             coupled_count: 2,
@@ -279,7 +279,7 @@ fn opus_head_round_trips_all_families() {
 #[test]
 fn decodes_a_real_ogg_opus_file_end_to_end() {
     let data = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sine_mono.opus")).expect("fixture");
-    let (pcm, head) = opus_native::decode_ogg_opus(&data).expect("decode");
+    let (pcm, head) = opus_rs::decode_ogg_opus(&data).expect("decode");
 
     assert_eq!(head.channel_count, 1);
     assert_eq!(head.pre_skip, 312);
@@ -293,8 +293,8 @@ fn decodes_a_real_ogg_opus_file_end_to_end() {
         446119424, 1346046976, 41955584, 104922624, 1739180032, 19610880,
     ];
     {
-        use opus_native::OpusDecoder;
-        use opus_native::ogg::OggOpusReader;
+        use opus_rs::OpusDecoder;
+        use opus_rs::ogg::OggOpusReader;
         let mut reader = OggOpusReader::new(&data).expect("container");
         let mut decoder = OpusDecoder::new(1);
         let mut i = 0;
@@ -339,7 +339,7 @@ fn decodes_a_real_ogg_opus_file_end_to_end() {
 #[test]
 fn decodes_a_surround_ogg_opus_file() {
     let data = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/surround_51.opus")).expect("fixture");
-    let (pcm, head) = opus_native::decode_ogg_opus(&data).expect("decode");
+    let (pcm, head) = opus_rs::decode_ogg_opus(&data).expect("decode");
     assert_eq!(head.channel_count, 6);
     assert_eq!(pcm.len(), 48_000 * 6, "one second of 5.1 at 48 kHz");
 

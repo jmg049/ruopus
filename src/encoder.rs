@@ -133,7 +133,7 @@ fn compute_silk_rate_for_hybrid(rate: i32, swb: bool, channels: i32) -> i32 {
 /// hybrid packets; [`encode_auto`](Self::encode_auto) chooses the mode.
 ///
 /// ```
-/// use opus_native::{OpusEncoder, OpusDecoder};
+/// use opus_rs::{OpusEncoder, OpusDecoder};
 /// let mut enc = OpusEncoder::new(1);
 /// let mut dec = OpusDecoder::new(1);
 /// let frame = vec![0.0f32; 960]; // 20 ms of mono silence
@@ -1175,7 +1175,7 @@ pub fn encode_ogg_opus(pcm: &[f32], channels: usize, bitrate: u32) -> Vec<u8> {
 
     let head = OpusHead::family0(channels as u8, pre_skip, 48_000);
     let tags = OpusTags {
-        vendor: b"opus_native".to_vec(),
+        vendor: b"opus_rs".to_vec(),
         comments: Vec::new(),
     };
     let mut writer = OggOpusWriter::new(&head, &tags, 1);

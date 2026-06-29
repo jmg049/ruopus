@@ -21,7 +21,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use opus_native::{Bandwidth, OpusDecoder, OpusEncoder};
+use opus_rs::{Bandwidth, OpusDecoder, OpusEncoder};
 
 const FRAME: usize = 960; // 20 ms at 48 kHz
 

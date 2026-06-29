@@ -1,9 +1,9 @@
-"""Phase 4 binding tests: the opus_native.lowlevel submodule (SILK/LPC/CELT)."""
+"""Phase 4 binding tests: the opus_rs.lowlevel submodule (SILK/LPC/CELT)."""
 
 import numpy as np
 import pytest
 
-from opus_native import lowlevel as ll
+from opus_rs import lowlevel as ll
 
 
 def test_submodule_surface():

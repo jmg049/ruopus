@@ -1,4 +1,4 @@
-//! The Opus decoder, exposed to Python as `opus_native.OpusDecoder`.
+//! The Opus decoder, exposed to Python as `opus_rs.OpusDecoder`.
 
 use numpy::PyArray2;
 use pyo3::exceptions::PyValueError;
@@ -23,10 +23,10 @@ use super::numpy_io::{interleaved_f32_to_numpy, interleaved_i16_to_numpy};
 ///
 /// Examples
 /// --------
-/// >>> import opus_native
-/// >>> dec = opus_native.OpusDecoder(2, sample_rate=48000)
+/// >>> import opus_rs
+/// >>> dec = opus_rs.OpusDecoder(2, sample_rate=48000)
 /// >>> pcm = dec.decode_packet(packet)        # (frames, 2) float32 in [-1, 1]
-#[pyclass(module = "opus_native", name = "OpusDecoder")]
+#[pyclass(module = "opus_rs", name = "OpusDecoder")]
 pub struct OpusDecoder {
     inner: crate::decoder::OpusDecoder,
     channels: usize,

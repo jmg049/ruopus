@@ -1,4 +1,4 @@
-//! Python enums mirroring `opus_native`'s public packet enums.
+//! Python enums mirroring `opus_rs`'s public packet enums.
 //!
 //! Each is a thin value-type wrapper over the corresponding core enum
 //! (`crate::packet::{Mode, Bandwidth, FrameSize}`), kept here so the core stays
@@ -11,7 +11,7 @@ use std::time::Duration;
 use pyo3::prelude::*;
 
 /// Operating mode of an Opus frame (RFC 6716 §3.1).
-#[pyclass(eq, eq_int, frozen, hash, from_py_object, module = "opus_native", name = "Mode")]
+#[pyclass(eq, eq_int, frozen, hash, from_py_object, module = "opus_rs", name = "Mode")]
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Mode {
     /// LP (SILK) layer only: low-bitrate speech, narrowband through wideband.
@@ -50,7 +50,7 @@ impl From<Mode> for crate::packet::Mode {
     hash,
     ord,
     from_py_object,
-    module = "opus_native",
+    module = "opus_rs",
     name = "Bandwidth"
 )]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -109,7 +109,7 @@ impl From<Bandwidth> for crate::packet::Bandwidth {
 /// Signal-content hint for the automatic mode decision (``OPUS_SET_SIGNAL``).
 ///
 /// Biases :meth:`OpusEncoder.encode_auto`'s speech-vs-music classification.
-#[pyclass(eq, eq_int, frozen, hash, from_py_object, module = "opus_native", name = "Signal")]
+#[pyclass(eq, eq_int, frozen, hash, from_py_object, module = "opus_rs", name = "Signal")]
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Signal {
     /// Let the analysis decide (the default, ``OPUS_AUTO``).
@@ -141,15 +141,7 @@ impl From<Signal> for crate::encoder::Signal {
 }
 
 /// Coding application / latency profile (``OPUS_SET_APPLICATION``).
-#[pyclass(
-    eq,
-    eq_int,
-    frozen,
-    hash,
-    from_py_object,
-    module = "opus_native",
-    name = "Application"
-)]
+#[pyclass(eq, eq_int, frozen, hash, from_py_object, module = "opus_rs", name = "Application")]
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Application {
     /// VoIP: optimise for speech - bias toward SILK / hybrid
@@ -191,7 +183,7 @@ impl From<Application> for crate::encoder::Application {
     hash,
     ord,
     from_py_object,
-    module = "opus_native",
+    module = "opus_rs",
     name = "FrameSize"
 )]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

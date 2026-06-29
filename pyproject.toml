@@ -3,7 +3,7 @@ requires = ["maturin>=1.14,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "opus_native"
+name = "opus_rs"
 description = "A pure-Rust implementation of the Opus audio codec (RFC 6716) - fast, with first-class NumPy interop."
 readme = "README.md"
 license = { text = "MIT" }
@@ -36,10 +36,10 @@ dependencies = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/jmg049/opus_native"
-"Repository" = "https://github.com/jmg049/opus_native"
-"Documentation" = "https://docs.rs/opus_native"
-"Bug Reports" = "https://github.com/jmg049/opus_native/issues"
+"Homepage" = "https://github.com/jmg049/opus_rs"
+"Repository" = "https://github.com/jmg049/opus_rs"
+"Documentation" = "https://docs.rs/opus_rs"
+"Bug Reports" = "https://github.com/jmg049/opus_rs/issues"
 
 [project.optional-dependencies]
 docs = [
@@ -53,7 +53,7 @@ test = ["pytest>=7.4.0", "numpy>=1.22"]
 # Build the extension with the `python` feature on top of the crate defaults;
 # `extension-module` and `abi3-py39` ride along via that feature (see Cargo.toml).
 features = ["python"]
-module-name = "opus_native"
+module-name = "opus_rs"
 
 [tool.uv]
 # Rebuild the compiled extension whenever the Rust sources or manifests change.

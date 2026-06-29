@@ -1,7 +1,7 @@
 //! Low-level CELT bindings: the top-level CELT encoder and decoder.
 //!
 //! These code/decode a raw CELT frame body (no Opus TOC). For ordinary use
-//! prefer :class:`opus_native.OpusEncoder` / :class:`opus_native.OpusDecoder`,
+//! prefer :class:`opus_rs.OpusEncoder` / :class:`opus_rs.OpusDecoder`,
 //! which wrap CELT in the Opus packet layer. Decoding a coded CELT frame body
 //! requires the range decoder, which is not exposed; :class:`CeltDecoder` here
 //! covers construction, state, and packet-loss concealment.
@@ -23,7 +23,7 @@ use crate::python::numpy_io::{borrow_interleaved_f32, interleaved_f32_to_numpy};
 ///     Encode complexity 0-10. Defaults to 10.
 /// bitrate : int or None, optional
 ///     Target VBR bitrate in bits/s, or ``None`` for CBR. Defaults to ``None``.
-#[pyclass(module = "opus_native.lowlevel", name = "CeltEncoder")]
+#[pyclass(module = "opus_rs.lowlevel", name = "CeltEncoder")]
 pub struct CeltEncoder {
     inner: crate::celt::encoder::CeltEncoder,
     channels: usize,
@@ -159,7 +159,7 @@ impl CeltEncoder {
 /// sample_rate : int, optional
 ///     Output sample rate in Hz; one of 48000, 24000, 16000, 12000, 8000.
 ///     Defaults to 48000.
-#[pyclass(module = "opus_native.lowlevel", name = "CeltDecoder")]
+#[pyclass(module = "opus_rs.lowlevel", name = "CeltDecoder")]
 pub struct CeltDecoder {
     inner: crate::celt::decoder::CeltDecoder,
     channels: usize,

@@ -2,8 +2,8 @@
 //!
 //! These operate on `int16` PCM at the SILK *internal* rate (8/12/16 kHz), not
 //! the 48 kHz Opus rate - they are the raw SILK codec, below the Opus packet
-//! layer. For ordinary use prefer :class:`opus_native.OpusEncoder` /
-//! :class:`opus_native.OpusDecoder`.
+//! layer. For ordinary use prefer :class:`opus_rs.OpusEncoder` /
+//! :class:`opus_rs.OpusDecoder`.
 
 use numpy::{PyArray2, PyReadonlyArray1};
 use pyo3::exceptions::PyValueError;
@@ -34,7 +34,7 @@ fn check_silk_config(fs_khz: i32, nb_subfr: usize) -> PyResult<()> {
 ///     Target bitrate in bits/s. Defaults to 25000.
 /// complexity : int, optional
 ///     Encode complexity 0-10. Defaults to 10.
-#[pyclass(module = "opus_native.lowlevel", name = "SilkEncoder")]
+#[pyclass(module = "opus_rs.lowlevel", name = "SilkEncoder")]
 pub struct SilkEncoder {
     inner: crate::silk::encode::api::SilkEncoder,
     fs_khz: i32,
@@ -173,7 +173,7 @@ impl SilkEncoder {
 ///     Target bitrate in bits/s. Defaults to 25000.
 /// complexity : int, optional
 ///     Encode complexity 0-10. Defaults to 10.
-#[pyclass(module = "opus_native.lowlevel", name = "SilkStereoEncoder")]
+#[pyclass(module = "opus_rs.lowlevel", name = "SilkStereoEncoder")]
 pub struct SilkStereoEncoder {
     inner: crate::silk::encode::api::SilkStereoEncoder,
     fs_khz: i32,
@@ -280,7 +280,7 @@ impl SilkStereoEncoder {
 ///     Output rate in Hz.
 /// payload_size_ms : int
 ///     Packet duration in ms (10, 20, 40, or 60).
-#[pyclass(module = "opus_native.lowlevel", name = "DecControl", from_py_object)]
+#[pyclass(module = "opus_rs.lowlevel", name = "DecControl", from_py_object)]
 #[derive(Clone, Copy)]
 pub struct DecControl {
     pub(crate) inner: crate::silk::api::DecControl,
@@ -365,7 +365,7 @@ impl DecControl {
 ///
 /// The range-coder plumbing is handled internally: :meth:`decode` takes the
 /// raw payload ``bytes`` directly.
-#[pyclass(module = "opus_native.lowlevel", name = "SilkDecoder")]
+#[pyclass(module = "opus_rs.lowlevel", name = "SilkDecoder")]
 pub struct SilkDecoder {
     inner: crate::silk::api::SilkDecoder,
 }

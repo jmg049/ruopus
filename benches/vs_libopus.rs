@@ -1,4 +1,4 @@
-//! Throughput comparison: pure-Rust `opus_native` vs libopus (1.6, via the `opus` FFI crate) - decode and encode,
+//! Throughput comparison: pure-Rust `opus_rs` vs libopus (1.6, via the `opus` FFI crate) - decode and encode,
 //! in-process, on identical data.
 //!
 //!   cargo bench --bench vs_libopus --features std
@@ -36,13 +36,13 @@ fn signal() -> Vec<f32> {
         .collect()
 }
 
-fn our_bw(bw: Bandwidth) -> opus_native::Bandwidth {
+fn our_bw(bw: Bandwidth) -> opus_rs::Bandwidth {
     match bw {
-        Bandwidth::Narrowband => opus_native::Bandwidth::NarrowBand,
-        Bandwidth::Mediumband => opus_native::Bandwidth::MediumBand,
-        Bandwidth::Wideband => opus_native::Bandwidth::WideBand,
-        Bandwidth::Superwideband => opus_native::Bandwidth::SuperWideBand,
-        _ => opus_native::Bandwidth::FullBand,
+        Bandwidth::Narrowband => opus_rs::Bandwidth::NarrowBand,
+        Bandwidth::Mediumband => opus_rs::Bandwidth::MediumBand,
+        Bandwidth::Wideband => opus_rs::Bandwidth::WideBand,
+        Bandwidth::Superwideband => opus_rs::Bandwidth::SuperWideBand,
+        _ => opus_rs::Bandwidth::FullBand,
     }
 }
 
@@ -71,7 +71,7 @@ fn main() {
     let frames: Vec<&[f32]> = pcm.chunks_exact(FRAME).collect();
     let nframes = frames.len();
     println!(
-        "opus_native vs libopus {} - {} frames ({} s audio), one core\n",
+        "opus_rs vs libopus {} - {} frames ({} s audio), one core\n",
         opus::version(),
         nframes,
         SECONDS
@@ -84,7 +84,7 @@ fn main() {
     ];
 
     // ---- DECODE ----
-    println!("DECODE                opus_native            libopus 1.6     speedup");
+    println!("DECODE                opus_rs            libopus 1.6     speedup");
     for &(label, bw, br, app) in &configs {
         // Reference packets: encode the signal once with libopus.
         let mut refenc = opus::Encoder::new(FS as u32, Channels::Mono, app).unwrap();
@@ -96,12 +96,12 @@ fn main() {
             .map(|f| refenc.encode_vec_float(f, 1275).unwrap())
             .collect();
 
-        let mut od = opus_native::OpusDecoder::new(1);
+        let mut od = opus_rs::OpusDecoder::new(1);
         for p in &packets {
             let _ = od.decode_packet(p);
         }
         let ours = time_per_frame(nframes, || {
-            let mut od = opus_native::OpusDecoder::new(1);
+            let mut od = opus_rs::OpusDecoder::new(1);
             for p in &packets {
                 black_box(od.decode_packet(black_box(p)).unwrap());
             }
@@ -129,10 +129,10 @@ fn main() {
     // Like-for-like: our encoder at the SAME complexity as libopus (0 and 10),
     // so each column is a fair comparison rather than our full-quality encoder
     // against libopus's stripped-down complexity-0 mode.
-    println!("\nENCODE             opus_native c0 / libopus c0      opus_native c10 / libopus c10");
+    println!("\nENCODE             opus_rs c0 / libopus c0      opus_rs c10 / libopus c10");
     for &(label, bw, br, app) in &configs {
         let bench_ours = |complexity: u8| -> f64 {
-            let mut oe = opus_native::OpusEncoder::new(1);
+            let mut oe = opus_rs::OpusEncoder::new(1);
             oe.set_bandwidth(our_bw(bw));
             oe.set_bitrate(Some(br));
             oe.set_complexity(complexity);
@@ -140,7 +140,7 @@ fn main() {
                 let _ = oe.encode_auto(f, 1275); // warm up
             }
             time_per_frame(nframes, || {
-                let mut oe = opus_native::OpusEncoder::new(1);
+                let mut oe = opus_rs::OpusEncoder::new(1);
                 oe.set_bandwidth(our_bw(bw));
                 oe.set_bitrate(Some(br));
                 oe.set_complexity(complexity);

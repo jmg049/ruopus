@@ -1,5 +1,5 @@
 //! Differential FEC check against a libopus reference decode.
-use opus_native::{OpusDecoder, Packet};
+use opus_rs::{OpusDecoder, Packet};
 
 fn main() {
     let bits = std::fs::read("/tmp/fec.bit").unwrap();

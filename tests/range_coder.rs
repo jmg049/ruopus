@@ -7,7 +7,7 @@
 //! decoder and encoder mutual oracles: an error in either side's arithmetic
 //! desynchronizes the pair almost immediately.
 
-use opus_native::{RangeDecoder, RangeEncoder};
+use opus_rs::{RangeDecoder, RangeEncoder};
 
 /// A small deterministic PRNG (xorshift32) so property-style tests need no
 /// dependencies and never flake.

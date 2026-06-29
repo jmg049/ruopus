@@ -12,7 +12,7 @@ use super::numpy_io::{borrow_interleaved_f32, interleaved_f32_to_numpy};
 /// The channel-mapping table is flattened onto this object: family-0 streams
 /// report :attr:`mapping_family` ``0`` with the optional fields ``None``;
 /// other families expose their stream/coupled counts and per-channel table.
-#[pyclass(module = "opus_native", name = "OpusHead", frozen)]
+#[pyclass(module = "opus_rs", name = "OpusHead", frozen)]
 pub struct OpusHead {
     inner: crate::ogg::OpusHead,
 }

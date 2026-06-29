@@ -1,4 +1,4 @@
-opus_native
+opus_rs
 ===========
 
 A pure-Rust implementation of the Opus audio codec (`RFC 6716
@@ -10,10 +10,10 @@ shaped ``(frames, channels)``, moved (not copied) out of Rust; packets are
 .. code-block:: python
 
    import numpy as np
-   import opus_native
+   import opus_rs
 
-   enc = opus_native.OpusEncoder(2, bitrate=64000)
-   dec = opus_native.OpusDecoder(2)
+   enc = opus_rs.OpusEncoder(2, bitrate=64000)
+   dec = opus_rs.OpusDecoder(2)
 
    frame = np.zeros((960, 2), dtype=np.float32)   # 20 ms stereo at 48 kHz
    packet = enc.encode(frame)                      # -> bytes

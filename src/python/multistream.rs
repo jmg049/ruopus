@@ -1,5 +1,5 @@
 //! The multistream (surround) decoder, exposed as
-//! `opus_native.MultistreamDecoder`.
+//! `opus_rs.MultistreamDecoder`.
 
 use numpy::PyArray2;
 use pyo3::exceptions::PyValueError;
@@ -26,7 +26,7 @@ use super::numpy_io::interleaved_f32_to_numpy;
 /// sample_rate : int, optional
 ///     Output sample rate in Hz; one of 48000, 24000, 16000, 12000, 8000.
 ///     Defaults to 48000.
-#[pyclass(module = "opus_native", name = "MultistreamDecoder")]
+#[pyclass(module = "opus_rs", name = "MultistreamDecoder")]
 pub struct MultistreamDecoder {
     inner: crate::multistream::MultistreamDecoder,
     channels: usize,

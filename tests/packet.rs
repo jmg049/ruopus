@@ -1,7 +1,7 @@
 //! Packet framing tests, including the worked examples of RFC 6716 §3.3 and
 //! one test per well-formedness requirement [R1]-[R7].
 
-use opus_native::{Bandwidth, FrameSize, Mode, Packet, PacketError, Toc};
+use opus_rs::{Bandwidth, FrameSize, Mode, Packet, PacketError, Toc};
 
 #[test]
 fn toc_table_2_is_complete() {
