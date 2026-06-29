@@ -71,5 +71,10 @@ mod lowlevel_module {
     #[pymodule_export]
     use super::lowlevel::celt::{CeltDecoder, CeltEncoder};
     #[pymodule_export]
+    use super::lowlevel::lpc::{
+        LpcCoefficients, compute_autocorrelation, estimate_pitch, levinson_durbin, lpc_analysis, lpc_residual,
+        lpc_residual_stateful, lpc_synthesis, lpc_synthesis_stateful, ltp_residual, ltp_synthesis,
+    };
+    #[pymodule_export]
     use super::lowlevel::silk::{DecControl, SilkDecoder, SilkEncoder, SilkStereoEncoder};
 }

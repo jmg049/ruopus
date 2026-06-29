@@ -43,16 +43,7 @@ impl From<Mode> for crate::packet::Mode {
 }
 
 /// Audio bandwidth of an Opus frame (RFC 6716 §2.1.3, §3.1).
-#[pyclass(
-    eq,
-    eq_int,
-    frozen,
-    hash,
-    ord,
-    from_py_object,
-    module = "ruopus",
-    name = "Bandwidth"
-)]
+#[pyclass(eq, eq_int, frozen, hash, ord, from_py_object, module = "ruopus", name = "Bandwidth")]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Bandwidth {
     /// 4 kHz audio bandwidth, 8 kHz effective sample rate.
@@ -176,16 +167,7 @@ impl From<Application> for crate::encoder::Application {
 }
 
 /// Duration of one Opus frame (RFC 6716 §3.1, Table 2).
-#[pyclass(
-    eq,
-    eq_int,
-    frozen,
-    hash,
-    ord,
-    from_py_object,
-    module = "ruopus",
-    name = "FrameSize"
-)]
+#[pyclass(eq, eq_int, frozen, hash, ord, from_py_object, module = "ruopus", name = "FrameSize")]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FrameSize {
     /// 2.5 ms (CELT-only modes).

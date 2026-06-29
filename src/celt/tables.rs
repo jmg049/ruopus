@@ -1,5 +1,5 @@
-//! Bit-allocation tables of the standard CELT mode, extracted mechanically
-//! - see `tools/` provenance note in the module docs of [`super::rate`]. Do
+//! Bit-allocation tables of the standard CELT mode, extracted mechanically;
+//! see `tools/` provenance note in the module docs of [`super::rate`]. Do
 //! not edit by hand.
 
 use super::modes::NB_EBANDS;
