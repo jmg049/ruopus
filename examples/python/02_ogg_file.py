@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
-from opus_rs import decode_ogg_opus, encode_ogg_opus
+from ruopus import decode_ogg_opus, encode_ogg_opus
 
 SR = 48000
 
@@ -25,7 +25,7 @@ def main() -> None:
 
     ogg_bytes = encode_ogg_opus(pcm, channels=1, bitrate=96000)
 
-    path = Path(tempfile.gettempdir()) / "opus_rs_example.opus"
+    path = Path(tempfile.gettempdir()) / "ruopus_example.opus"
     path.write_bytes(ogg_bytes)
     print(f"wrote {path} ({len(ogg_bytes)} bytes)")
 

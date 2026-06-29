@@ -15,7 +15,7 @@ use super::enums::{Bandwidth, FrameSize, Mode};
 /// The table-of-contents byte heading every Opus packet (RFC 6716 §3.1).
 ///
 /// A value type wrapping the raw byte; all 256 values are valid TOCs.
-#[pyclass(module = "opus_rs", name = "Toc", eq, hash, frozen, from_py_object)]
+#[pyclass(module = "ruopus", name = "Toc", eq, hash, frozen, from_py_object)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Toc {
     inner: crate::packet::Toc,
@@ -120,7 +120,7 @@ impl Toc {
 /// signalling DTX). Construct with ``Packet(data)`` to parse a standard packet,
 /// or :meth:`parse_self_delimited` for the self-delimiting framing used by
 /// multistream payloads.
-#[pyclass(module = "opus_rs", name = "Packet", frozen, sequence)]
+#[pyclass(module = "ruopus", name = "Packet", frozen, sequence)]
 pub struct Packet {
     toc: Toc,
     frames: Vec<Vec<u8>>,

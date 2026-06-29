@@ -1,9 +1,9 @@
-"""Phase 4 binding tests: the opus_rs.lowlevel submodule (SILK/LPC/CELT)."""
+"""Phase 4 binding tests: the ruopus.lowlevel submodule (SILK/LPC/CELT)."""
 
 import numpy as np
 import pytest
 
-from opus_rs import lowlevel as ll
+from ruopus import lowlevel as ll
 
 
 def test_submodule_surface():

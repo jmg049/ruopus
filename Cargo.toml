@@ -1,5 +1,5 @@
 [package]
-name = "opus_rs"
+name = "ruopus"
 version = "0.1.1"
 edition = "2024"
 rust-version = "1.85"
@@ -7,8 +7,8 @@ authors = ["Jack Geraghty <jgeraghty049@gmail.com>"]
 license = "MIT"
 readme = "README.md"
 description = "A pure-Rust implementation of the Opus audio codec (RFC 6716). No FFI; unsafe confined to documented SIMD kernels."
-repository = "https://github.com/jmg049/opus_rs"
-documentation = "https://docs.rs/opus_rs"
+repository = "https://github.com/jmg049/ruopus"
+documentation = "https://docs.rs/ruopus"
 keywords = ["opus", "audio", "codec", "decoder", "rfc6716"]
 categories = ["multimedia::audio", "multimedia::encoding", "no-std"]
 exclude = ["/manual/*", "/tests/*", "/examples/*", "/benches/*", "/tools/*", "/target/*"]
@@ -38,7 +38,7 @@ spectrograms = ["std", "dep:spectrograms"]
 python = ["std", "spectrograms", "dep:pyo3", "dep:numpy"]
 
 [lib]
-name = "opus_rs"
+name = "ruopus"
 # `rlib` keeps the crate usable as a normal Rust library (benches, examples,
 # tests, downstream crates); `cdylib` is what maturin links into the Python
 # extension module. The cdylib only pulls Python symbols when `python` is on.

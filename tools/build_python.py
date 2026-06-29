@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the `opus_rs` wheel with corrected type stubs.
+"""Build the `ruopus` wheel with corrected type stubs.
 
 PyO3's `experimental-inspect` pass emits complete `.pyi` stubs (types *and*
 docstrings) straight from the Rust source, but two mechanical fixes are needed
@@ -39,7 +39,7 @@ REQUIRED_IMPORTS = ("import numpy", "import numpy.typing")
 GETATTR_TAINT = "def __getattr__(name: str) -> Incomplete: ..."
 EXCEPTION_STUB = '''
 class OpusError(Exception):
-    """Base class for every error raised by ``opus_rs``.
+    """Base class for every error raised by ``ruopus``.
 
     Catch this to handle any codec failure regardless of its specific kind.
     """
@@ -47,21 +47,21 @@ class OpusError(Exception):
 class PacketError(OpusError):
     """Raised when an Opus packet is malformed (RFC 6716 §3.4 rules R1-R7).
 
-    Corresponds to the Rust ``opus_rs::PacketError``.
+    Corresponds to the Rust ``ruopus::PacketError``.
     """
 
 class EncodeError(OpusError):
     """Raised when encoding fails: an unsupported frame size, or an output
     budget outside ``3..=1275`` bytes that the packet could not be made to fit.
 
-    Corresponds to the Rust ``opus_rs::EncodeError``.
+    Corresponds to the Rust ``ruopus::EncodeError``.
     """
 
 class OggError(OpusError):
     """Raised when decoding an Ogg Opus stream fails (bad container, bad packet,
     or an unsupported channel-mapping family).
 
-    Corresponds to the Rust ``opus_rs::OggDecodeError``.
+    Corresponds to the Rust ``ruopus::OggDecodeError``.
     """
 '''
 

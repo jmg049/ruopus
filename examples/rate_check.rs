@@ -1,5 +1,5 @@
 //! Differential decode-rate check against a libopus reference decode.
-use opus_rs::OpusDecoder;
+use ruopus::OpusDecoder;
 
 fn main() {
     let vector = std::env::args().nth(1).expect("vector");

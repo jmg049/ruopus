@@ -11,7 +11,7 @@ Run: python examples/python/03_packet_loss.py
 
 import numpy as np
 
-from opus_rs import Bandwidth, OpusDecoder, OpusEncoder
+from ruopus import Bandwidth, OpusDecoder, OpusEncoder
 
 SR = 48000
 FRAME = 960  # 20 ms

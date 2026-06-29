@@ -1,4 +1,4 @@
-# opus_rs
+# ruopus
 
 A pure-Rust implementation of the [Opus audio codec](https://opus-codec.org/)
 ([RFC 6716](https://www.rfc-editor.org/rfc/rfc6716)): decoder and encoder, with
@@ -11,7 +11,7 @@ no C and no FFI.
 
 ## Overview
 
-`opus_rs` is a from-scratch Rust implementation of Opus. It links no
+`ruopus` is a from-scratch Rust implementation of Opus. It links no
 `libopus`, needs no C toolchain, and exposes plain `&[u8]`/`&[i16]`/`&[f32]`
 interfaces, so it embeds under any audio stack.
 
@@ -29,11 +29,11 @@ interfaces, so it embeds under any audio stack.
 
 ```toml
 [dependencies]
-opus_rs = "0.1"
+ruopus = "0.1"
 ```
 
 ```rust
-use opus_rs::{OpusDecoder, OpusEncoder};
+use ruopus::{OpusDecoder, OpusEncoder};
 
 // Decode Opus packets to interleaved f32 PCM.
 let mut dec = OpusDecoder::new(2); // channels
@@ -47,19 +47,19 @@ let packet = enc.encode_auto(&pcm_960, 4000)?;
 
 ```rust
 // Whole Ogg Opus files.
-let (pcm, head) = opus_rs::decode_ogg_opus(&bytes)?;
-let ogg = opus_rs::encode_ogg_opus(&pcm, 2, 96_000);
+let (pcm, head) = ruopus::decode_ogg_opus(&bytes)?;
+let ogg = ruopus::encode_ogg_opus(&pcm, 2, 96_000);
 ```
 
 ## Performance
 
 Measured against libopus 1.6.1 (SIMD-enabled C) on identical data, one core,
 pinned to a single performance core: `cargo bench --bench vs_libopus --features
-std`. Figures are x realtime; "ratio" is opus_rs divided by libopus.
+std`. Figures are x realtime; "ratio" is ruopus divided by libopus.
 
 **Decode**
 
-| Mode | opus_rs | libopus | ratio |
+| Mode | ruopus | libopus | ratio |
 |------|-------------|---------|-------|
 | SILK wideband 16 kb/s | 2095x | 1171x | 1.79x |
 | hybrid fullband 32 kb/s | 1199x | 850x | 1.41x |
@@ -70,7 +70,7 @@ MDCT, where libopus's SIMD wins.
 
 **Encode** (matched complexity)
 
-| Mode | opus_rs | libopus | ratio |
+| Mode | ruopus | libopus | ratio |
 |------|-------------|---------|-------|
 | SILK wideband 16 kb/s | 734x | 740x | 0.99x |
 | hybrid fullband 32 kb/s | 560x | 562x | 1.00x |

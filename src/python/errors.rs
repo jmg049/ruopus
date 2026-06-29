@@ -1,7 +1,7 @@
 //! Python exception hierarchy mirroring the crate's Rust error enums.
 //!
 //! Rooted at [`OpusError`] so Python callers can catch every codec failure with
-//! a single `except opus_rs.OpusError`. Each Rust error type converts into
+//! a single `except ruopus.OpusError`. Each Rust error type converts into
 //! the matching exception via a `From<…> for PyErr` impl, so the bindings use
 //! `?` directly and the original `Display` message is preserved.
 //!
@@ -14,37 +14,37 @@ use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 
 create_exception!(
-    opus_rs,
+    ruopus,
     OpusError,
     PyException,
-    "Base class for every error raised by `opus_rs`.\n\n\
+    "Base class for every error raised by `ruopus`.\n\n\
      Catch this to handle any codec failure regardless of its specific kind."
 );
 
 create_exception!(
-    opus_rs,
+    ruopus,
     PacketError,
     OpusError,
     "Raised when an Opus packet is malformed (RFC 6716 §3.4 rules R1-R7).\n\n\
-     Corresponds to the Rust `opus_rs::PacketError`."
+     Corresponds to the Rust `ruopus::PacketError`."
 );
 
 create_exception!(
-    opus_rs,
+    ruopus,
     EncodeError,
     OpusError,
     "Raised when encoding fails: an unsupported frame size, or an output budget \
      outside 3..=1275 bytes that the packet could not be made to fit.\n\n\
-     Corresponds to the Rust `opus_rs::EncodeError`."
+     Corresponds to the Rust `ruopus::EncodeError`."
 );
 
 create_exception!(
-    opus_rs,
+    ruopus,
     OggError,
     OpusError,
     "Raised when decoding an Ogg Opus stream fails (bad container, bad packet, \
      or an unsupported channel-mapping family).\n\n\
-     Corresponds to the Rust `opus_rs::OggDecodeError`."
+     Corresponds to the Rust `ruopus::OggDecodeError`."
 );
 
 impl From<crate::packet::PacketError> for pyo3::PyErr {

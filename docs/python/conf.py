@@ -1,19 +1,19 @@
-"""Sphinx configuration for the opus_rs Python API documentation.
+"""Sphinx configuration for the ruopus Python API documentation.
 
 Docstrings are single-sourced from the Rust ``///`` comments: PyO3 emits them
 as ``__doc__`` on the compiled module, and ``autodoc`` reads them here. The
 ``napoleon`` extension renders the NumPy-style sections (Parameters/Returns/
 Raises/Examples) the docstrings are written in. Build with::
 
-    pip install opus_rs[docs] && sphinx-build -W docs/python docs/python/_build
+    pip install ruopus[docs] && sphinx-build -W docs/python docs/python/_build
 """
 
 import importlib.metadata
 
-project = "opus_rs"
+project = "ruopus"
 author = "Jack Geraghty"
 try:
-    release = importlib.metadata.version("opus_rs")
+    release = importlib.metadata.version("ruopus")
 except importlib.metadata.PackageNotFoundError:
     release = "0.1.0"
 

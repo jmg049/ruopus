@@ -8,7 +8,7 @@
 //!
 //!   cargo run --release --example fuzz_encode --features std -- 200000
 
-use opus_rs::{Bandwidth, OpusDecoder, OpusEncoder};
+use ruopus::{Bandwidth, OpusDecoder, OpusEncoder};
 
 struct Rng(u64);
 impl Rng {

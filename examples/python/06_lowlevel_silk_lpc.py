@@ -1,6 +1,6 @@
 """Low-level building blocks: the SILK codec and LPC analysis.
 
-The `opus_rs.lowlevel` submodule exposes the layers beneath the Opus packet
+The `ruopus.lowlevel` submodule exposes the layers beneath the Opus packet
 codec. These are advanced tools - ordinary use should prefer OpusEncoder /
 OpusDecoder - but they let you drive SILK directly or run linear-prediction
 analysis on arbitrary signals.
@@ -10,7 +10,7 @@ Run: python examples/python/06_lowlevel_silk_lpc.py
 
 import numpy as np
 
-from opus_rs import lowlevel as ll
+from ruopus import lowlevel as ll
 
 
 def silk_roundtrip() -> None:

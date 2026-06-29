@@ -1,8 +1,8 @@
-//! Python bindings for `opus_rs`, built with [PyO3].
+//! Python bindings for `ruopus`, built with [PyO3].
 //!
 //! Compiled only under the `python` feature (a plain `cargo build`/`cargo test`
 //! stays zero-dependency and pure Rust); `maturin build` links it into the
-//! `opus_rs` extension module. Every item is declared so PyO3's
+//! `ruopus` extension module. Every item is declared so PyO3's
 //! `experimental-inspect` pass can emit a complete, docstring-carrying `.pyi`.
 //!
 //! [PyO3]: https://pyo3.rs
@@ -19,12 +19,12 @@ mod numpy_io;
 mod ogg;
 mod packet;
 
-/// Returns the `opus_rs` crate version (the Rust ``CARGO_PKG_VERSION``).
+/// Returns the `ruopus` crate version (the Rust ``CARGO_PKG_VERSION``).
 ///
 /// Examples
 /// --------
-/// >>> import opus_rs
-/// >>> opus_rs.version()
+/// >>> import ruopus
+/// >>> ruopus.version()
 /// '0.1.0'
 #[pyfunction]
 #[must_use]
@@ -40,7 +40,7 @@ pub fn version() -> &'static str {
 /// :class:`OpusError`. PCM crosses the boundary as NumPy ``float32``/``int16``
 /// arrays shaped ``(frames, channels)``, moved (not copied) out of Rust.
 #[pymodule]
-mod opus_rs {
+mod ruopus {
     #[pymodule_export]
     use super::decoder::OpusDecoder;
     #[pymodule_export]

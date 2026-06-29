@@ -5,7 +5,7 @@
 
 #![cfg(feature = "std")]
 
-use opus_rs::{Bandwidth, OpusDecoder, OpusEncoder};
+use ruopus::{Bandwidth, OpusDecoder, OpusEncoder};
 
 /// Mutated hybrid packets once underflowed `RangeDecoder::force_tell`
 /// (`assert bits >= current`) and then `decoder.rs` `len -= redundancy_bytes`.

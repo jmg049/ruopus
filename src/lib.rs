@@ -33,7 +33,7 @@ extern crate alloc;
 // Float transcendentals need `std` (inherent `f32`/`f64` methods) or `libm`.
 #[cfg(all(not(feature = "std"), not(feature = "libm")))]
 compile_error!(
-    "opus_rs needs floating-point transcendentals: enable the default `std` feature, or for \
+    "ruopus needs floating-point transcendentals: enable the default `std` feature, or for \
      `no_std` build with `default-features = false, features = [\"libm\"]`"
 );
 

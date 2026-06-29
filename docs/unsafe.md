@@ -1,6 +1,6 @@
 # Unsafe code
 
-`opus_rs` is overwhelmingly safe Rust. The crate-level lint is
+`ruopus` is overwhelmingly safe Rust. The crate-level lint is
 `unsafe_code = "deny"` (not `forbid`), so `unsafe` is rejected *everywhere by
 default* and only permitted at sites that opt in with an explicit
 `#[allow(unsafe_code)]` and a `// SAFETY:` justification. Clippy's

@@ -5,7 +5,7 @@ Run: python examples/python/01_encode_decode.py
 
 import numpy as np
 
-from opus_rs import OpusDecoder, OpusEncoder
+from ruopus import OpusDecoder, OpusEncoder
 
 SR = 48000
 FRAME = 960  # 20 ms at 48 kHz

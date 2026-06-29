@@ -8,8 +8,8 @@ contract, the packet enums, and the exception hierarchy.
 import numpy as np
 import pytest
 
-import opus_rs as op
-from opus_rs import (
+import ruopus as op
+from ruopus import (
     Bandwidth,
     EncodeError,
     FrameSize,

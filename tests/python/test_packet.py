@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from opus_rs import (
+from ruopus import (
     Bandwidth,
     FrameSize,
     Mode,

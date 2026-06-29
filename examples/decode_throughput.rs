@@ -8,7 +8,7 @@
 
 use std::time::Instant;
 
-use opus_rs::OpusDecoder;
+use ruopus::OpusDecoder;
 
 fn main() {
     let path = std::env::args().nth(1).expect("usage: decode_throughput <file.bit>");

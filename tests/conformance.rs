@@ -20,7 +20,7 @@
 
 use std::path::{Path, PathBuf};
 
-use opus_rs::{Mode, Packet};
+use ruopus::{Mode, Packet};
 
 /// One packet from an `opus_demo` bitstream file.
 struct DemoPacket {
@@ -152,8 +152,8 @@ fn vector_suite_exercises_every_configuration_class() {
 
 /// The CELT end band per Opus bandwidth (`opus_decoder.c` endband mapping).
 #[cfg(feature = "std")]
-fn celt_end_band(bw: opus_rs::Bandwidth) -> usize {
-    use opus_rs::Bandwidth;
+fn celt_end_band(bw: ruopus::Bandwidth) -> usize {
+    use ruopus::Bandwidth;
     match bw {
         Bandwidth::NarrowBand => 13,
         Bandwidth::MediumBand | Bandwidth::WideBand => 17,
@@ -173,8 +173,8 @@ fn celt_end_band(bw: opus_rs::Bandwidth) -> usize {
 #[cfg(feature = "std")]
 #[test]
 fn celt_only_vectors_final_range_is_bit_exact_and_pcm_matches() {
-    use opus_rs::RangeDecoder;
-    use opus_rs::celt::decoder::CeltDecoder;
+    use ruopus::RangeDecoder;
+    use ruopus::celt::decoder::CeltDecoder;
 
     let Some(dir) = vectors_dir() else { return };
 
@@ -233,8 +233,8 @@ fn celt_only_vectors_final_range_is_bit_exact_and_pcm_matches() {
 #[cfg(feature = "std")]
 #[test]
 fn silk_only_vectors_final_range_is_bit_exact_and_pcm_matches() {
-    use opus_rs::RangeDecoder;
-    use opus_rs::silk::api::{DecControl, SilkDecoder};
+    use ruopus::RangeDecoder;
+    use ruopus::silk::api::{DecControl, SilkDecoder};
 
     let Some(dir) = vectors_dir() else { return };
 
@@ -260,8 +260,8 @@ fn silk_only_vectors_final_range_is_bit_exact_and_pcm_matches() {
                 channels_internal: usize::from(toc.channels()),
                 channels_api: 2,
                 internal_sample_rate: match toc.bandwidth() {
-                    opus_rs::Bandwidth::NarrowBand => 8000,
-                    opus_rs::Bandwidth::MediumBand => 12000,
+                    ruopus::Bandwidth::NarrowBand => 8000,
+                    ruopus::Bandwidth::MediumBand => 12000,
                     _ => 16000,
                 },
                 api_sample_rate: 48000,
@@ -284,7 +284,7 @@ fn silk_only_vectors_final_range_is_bit_exact_and_pcm_matches() {
                     let redundancy_bytes = frame.len() - ((dec.tell() as usize + 7) >> 3);
                     let tail = &frame[frame.len() - redundancy_bytes..];
                     let mut rdec = RangeDecoder::new(tail);
-                    let mut celt = opus_rs::celt::decoder::CeltDecoder::new(2);
+                    let mut celt = ruopus::celt::decoder::CeltDecoder::new(2);
                     let _ = celt.decode_frame(
                         &mut rdec,
                         redundancy_bytes,
@@ -327,7 +327,7 @@ fn silk_only_vectors_final_range_is_bit_exact_and_pcm_matches() {
 #[cfg(feature = "std")]
 #[test]
 fn all_vectors_decode_through_the_opus_decoder() {
-    use opus_rs::OpusDecoder;
+    use ruopus::OpusDecoder;
 
     let Some(dir) = vectors_dir() else { return };
 
@@ -370,7 +370,7 @@ fn all_vectors_decode_through_the_opus_decoder() {
 #[cfg(feature = "std")]
 #[test]
 fn concealment_survives_simulated_loss() {
-    use opus_rs::OpusDecoder;
+    use ruopus::OpusDecoder;
 
     let Some(dir) = vectors_dir() else { return };
     // (vector, expected total stereo samples - matching libopus' output
@@ -408,7 +408,7 @@ fn concealment_survives_simulated_loss() {
 #[cfg(feature = "std")]
 #[test]
 fn decodes_at_every_api_rate() {
-    use opus_rs::OpusDecoder;
+    use ruopus::OpusDecoder;
 
     let Some(dir) = vectors_dir() else { return };
     let bits = std::fs::read(dir.join("testvector02.bit")).expect("read .bit");
@@ -597,7 +597,7 @@ fn opus_compare_48k_stereo(x: &[f32], y: &[f32]) -> (f64, f64) {
 #[test]
 #[ignore = "minutes of DFT; run with --release -- --ignored"]
 fn official_quality_metric_passes_every_vector() {
-    use opus_rs::OpusDecoder;
+    use ruopus::OpusDecoder;
 
     let Some(dir) = vectors_dir() else { return };
     for (name, _) in VECTORS {
@@ -633,8 +633,8 @@ fn official_quality_metric_passes_every_vector() {
 #[cfg(feature = "std")]
 #[test]
 fn celt_encoder_round_trips_through_the_decoder() {
-    use opus_rs::OpusDecoder;
-    use opus_rs::celt::encoder::CeltEncoder;
+    use ruopus::OpusDecoder;
+    use ruopus::celt::encoder::CeltEncoder;
 
     let mut enc = CeltEncoder::new();
     let mut dec = OpusDecoder::new(1);
@@ -688,8 +688,8 @@ fn celt_encoder_round_trips_through_the_decoder() {
 #[cfg(feature = "std")]
 #[test]
 fn celt_stereo_encoder_round_trips_through_the_decoder() {
-    use opus_rs::OpusDecoder;
-    use opus_rs::celt::encoder::CeltEncoder;
+    use ruopus::OpusDecoder;
+    use ruopus::celt::encoder::CeltEncoder;
 
     let mut enc = CeltEncoder::with_channels(2);
     let mut dec = OpusDecoder::new(2);

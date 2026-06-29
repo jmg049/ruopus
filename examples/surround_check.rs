@@ -1,6 +1,6 @@
 //! Decodes a surround Ogg Opus file, dumps the packets + layout for the
 //! libopus differential harness, then compares if a reference exists.
-use opus_rs::ogg::{ChannelMapping, OggOpusReader};
+use ruopus::ogg::{ChannelMapping, OggOpusReader};
 
 fn main() {
     let path = std::env::args().nth(1).expect("usage: surround_check <file.opus>");
@@ -35,7 +35,7 @@ fn main() {
         );
     }
 
-    let (pcm, head) = opus_rs::decode_ogg_opus(&data).unwrap();
+    let (pcm, head) = ruopus::decode_ogg_opus(&data).unwrap();
     println!(
         "decoded {} samples x {} ch",
         pcm.len() / usize::from(head.channel_count),
