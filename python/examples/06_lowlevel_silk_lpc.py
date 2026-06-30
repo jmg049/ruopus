@@ -5,7 +5,7 @@ codec. These are advanced tools - ordinary use should prefer OpusEncoder /
 OpusDecoder - but they let you drive SILK directly or run linear-prediction
 analysis on arbitrary signals.
 
-Run: python examples/python/06_lowlevel_silk_lpc.py
+Run: python python/examples/06_lowlevel_silk_lpc.py
 """
 
 import numpy as np

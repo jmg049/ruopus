@@ -4,7 +4,7 @@ Opus has three coding modes - SILK (speech), CELT (music/low-delay), and hybrid
 (both) - plus tunable bitrate, complexity, bandwidth and DTX. Configuration is
 exposed as plain properties on the encoder.
 
-Run: python examples/python/04_modes_and_config.py
+Run: python python/examples/04_modes_and_config.py
 """
 
 import numpy as np

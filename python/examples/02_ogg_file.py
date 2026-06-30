@@ -5,7 +5,7 @@ plays in ffmpeg / VLC; `decode_ogg_opus` reads one back, applying pre-skip,
 end-trimming and the header's output gain, and returns the PCM plus the parsed
 `OpusHead`.
 
-Run: python examples/python/02_ogg_file.py
+Run: python python/examples/02_ogg_file.py
 """
 
 import tempfile

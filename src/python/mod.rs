@@ -39,7 +39,11 @@ pub fn version() -> &'static str {
 /// :class:`FrameSize`), and an exception hierarchy rooted at
 /// :class:`OpusError`. PCM crosses the boundary as NumPy ``float32``/``int16``
 /// arrays shaped ``(frames, channels)``, moved (not copied) out of Rust.
-#[pymodule]
+///
+/// Compiled as the private extension ``ruopus._ruopus``; the public
+/// ``ruopus`` package (``python/ruopus/__init__.py``) re-exports everything
+/// from here, so this name is never imported directly by users.
+#[pymodule(name = "_ruopus")]
 mod ruopus {
     #[pymodule_export]
     use super::decoder::OpusDecoder;

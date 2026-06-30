@@ -7,7 +7,7 @@ installed wheel:
 ```sh
 python tools/build_python.py --release      # build the wheel
 pip install target/wheels/ruopus-*.whl  # install it
-python examples/python/01_encode_decode.py
+python python/examples/01_encode_decode.py
 ```
 
 | Example | Shows |

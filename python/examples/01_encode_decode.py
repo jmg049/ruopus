@@ -1,6 +1,6 @@
 """Basic encode -> decode round-trip.
 
-Run: python examples/python/01_encode_decode.py
+Run: python python/examples/01_encode_decode.py
 """
 
 import numpy as np

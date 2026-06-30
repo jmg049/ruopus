@@ -1,10 +1,5 @@
 name: python-wheels
 
-# Build per-version wheels (cp39-cp313) for Linux, macOS, and Windows, each with
-# PyO3-introspected type stubs patched by tools/build_python.py (NumPy imports +
-# the typed exception hierarchy). No abi3: subclassing PyException for the
-# exception hierarchy requires per-version builds.
-
 on:
   workflow_dispatch:
   push:
@@ -12,6 +7,7 @@ on:
   pull_request:
     paths:
       - "src/python/**"
+      - "python/ruopus/**"
       - "tools/build_python.py"
       - "Cargo.toml"
       - "pyproject.toml"

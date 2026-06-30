@@ -6,7 +6,7 @@ packets carry a redundant LBRR copy of the previous frame - genuinely recover
 it from the *next* packet with `decode_fec`. FEC currently covers the mono
 SILK-mode path (`encode_silk`).
 
-Run: python examples/python/03_packet_loss.py
+Run: python python/examples/03_packet_loss.py
 """
 
 import numpy as np

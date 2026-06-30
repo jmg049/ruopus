@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "ruopus"
 description = "A pure-Rust implementation of the Opus audio codec (RFC 6716) - fast, with first-class NumPy interop."
-readme = "README.md"
+readme = "python/README.md"
 license = { text = "MIT" }
 authors = [{ name = "Jack Geraghty (jmg049)", email = "jgeraghty049@gmail.com" }]
 maintainers = [{ name = "Jack Geraghty (jmg049)", email = "jgeraghty049@gmail.com" }]
@@ -46,6 +46,7 @@ docs = [
     "sphinx>=7.0.0",
     "sphinx-rtd-theme>=2.0.0",
     "myst-parser>=2.0.0",
+    "sphinx-copybutton>=0.5.0",
 ]
 test = ["pytest>=7.4.0", "numpy>=1.22"]
 
@@ -53,7 +54,13 @@ test = ["pytest>=7.4.0", "numpy>=1.22"]
 # Build the extension with the `python` feature on top of the crate defaults;
 # `extension-module` and `abi3-py39` ride along via that feature (see Cargo.toml).
 features = ["python"]
-module-name = "ruopus"
+# The compiled extension is private (`ruopus._ruopus`); `python/ruopus/` is the
+# public package that re-exports it, so Python users never see Rust code or a
+# bare `.so` import.
+module-name = "ruopus._ruopus"
+python-source = "python"
+include = ["python/ruopus/**/*.pyi", "python/ruopus/py.typed"]
+exclude = ["python/tests/*", "python/examples/*"]
 
 [tool.uv]
 # Rebuild the compiled extension whenever the Rust sources or manifests change.
@@ -65,4 +72,5 @@ cache-keys = [
     { file = "Cargo.toml" },
     { file = "Cargo.lock" },
     { file = "src/**/*.rs" },
+    { file = "python/ruopus/**" },
 ]

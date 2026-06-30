@@ -5,7 +5,7 @@
 layout via `mapping`. A single ordinary Opus packet is a valid one-stream
 multistream packet, which makes the routing easy to demonstrate.
 
-Run: python examples/python/05_multistream.py
+Run: python python/examples/05_multistream.py
 """
 
 import numpy as np

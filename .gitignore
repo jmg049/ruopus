@@ -8,6 +8,10 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 *.egg-info/
+# `maturin develop` / editable installs drop the compiled extension straight
+# into python/ruopus/; it's rebuilt from src/**/*.rs and must never be committed.
+python/ruopus/*.so
+python/ruopus/*.pyd
 
 *.aux
 *.bbl

@@ -68,7 +68,7 @@ Install from [PyPI](https://pypi.org/project/ruopus/):
 pip install ruopus
 ```
 
-The bindings wrap `OpusDecoder` and `OpusEncoder` with NumPy interop — decoded
+The bindings wrap `OpusDecoder` and `OpusEncoder` with NumPy interop: decoded
 PCM is returned as a `(frames, channels) float32` array; the encoder accepts the
 same shape or a flat interleaved array.
 
