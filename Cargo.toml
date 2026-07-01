@@ -1,6 +1,6 @@
 [package]
 name = "ruopus"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Jack Geraghty <jgeraghty049@gmail.com>"]
