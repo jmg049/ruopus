@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -115,6 +116,22 @@ def patch_wheel(wheel: Path) -> list[str]:
     return patched
 
 
+def resolve_maturin() -> str:
+    # pip installs the `maturin` console script next to the interpreter that
+    # ran pip (or into its Scripts/ dir on Windows). That directory isn't
+    # necessarily on PATH -- e.g. CI invokes manylinux's per-version
+    # interpreters by full path without exporting their bin dir -- so look
+    # there first instead of trusting a bare "maturin" lookup.
+    bin_dir = Path(sys.executable).parent
+    for candidate in (bin_dir / "maturin", bin_dir / "maturin.exe", bin_dir / "Scripts" / "maturin.exe"):
+        if candidate.exists():
+            return str(candidate)
+    found = shutil.which("maturin")
+    if found:
+        return found
+    raise SystemExit("maturin executable not found near the running interpreter or on PATH")
+
+
 def newest_wheel() -> Path:
     wheels = sorted((ROOT / "target" / "wheels").glob("*.whl"), key=lambda p: p.stat().st_mtime)
     if not wheels:
@@ -133,7 +150,7 @@ def main() -> int:
 
     # Build with maturin (passing through extra args, e.g. --release -i pythonX.Y)
     # then patch the produced wheel's stubs.
-    subprocess.run(["maturin", "build", "--generate-stubs", *args], cwd=ROOT, check=True)
+    subprocess.run([resolve_maturin(), "build", "--generate-stubs", *args], cwd=ROOT, check=True)
     wheel = newest_wheel()
     patched = patch_wheel(wheel)
     print(f"patched stubs in {wheel.name}: {', '.join(patched) or '(none)'}")
