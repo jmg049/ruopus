@@ -3,51 +3,395 @@
 % Practical applications using the ruopus library from Python
 % ============================================
 
+\lstdefinelanguage{Python}{
+  keywords={and,as,assert,async,await,break,class,continue,def,del,elif,else,
+    except,finally,for,from,global,if,import,in,is,lambda,nonlocal,not,or,
+  pass,raise,return,try,while,with,yield,None,True,False,self},
+  morekeywords=[2]{int,float,bool,bytes,str,list,dict,tuple,set},
+  sensitive=true,
+  morecomment=[l]{\#},
+  morestring=[b]",
+  morestring=[b]',
+}
+
 \section{Python API Reference}\label{sec:python_guide}
 
 \subsection{Introduction}\label{subsec:python_intro}
 
-Python bindings for \texttt{opus\_native} are planned but not yet released. This
-section is reserved for the complete Python reference: installation, the
-encoder and decoder objects, streaming and file (Ogg Opus) helpers, and worked
-examples that apply the concepts from the preceding sections in practice.
+\texttt{ruopus} ships a Python extension module built with
+\href{https://pyo3.rs}{PyO3} and \href{https://numpy.org}{NumPy} interop
+(\texttt{rust-numpy}). It mirrors the Rust public surface described in
+\cref{sec:opus_layer} almost one-to-one: a stateful \code{OpusEncoder} and
+\code{OpusDecoder}, the packet enums (\code{Mode}, \code{Bandwidth},
+\code{FrameSize}, \code{Application}, \code{Signal}), an exception hierarchy
+rooted at \code{OpusError}, and a \code{ruopus.lowlevel} submodule exposing
+the SILK and CELT layers directly.
+
+\begin{concept}{Zero-Copy PCM}
+  PCM crosses the Rust/Python boundary as NumPy \code{float32} (or
+  \code{int16}) arrays shaped \code{(frames, channels)}, with no extra copy in
+  either direction: decode output is moved out of Rust's \code{Vec} directly
+  into the array's buffer, and encode input is borrowed from the array via the
+  buffer protocol. Every codec call releases the GIL, so decode throughput
+  scales across threads exactly as the pure-Rust benchmarks in
+  \cref{sec:optimizations} do.
+\end{concept}
+
+Fully type-hinted stubs (\code{.pyi}, generated from the compiled extension by
+PyO3's \code{experimental-inspect} and checked with \code{pyright}) and one
+set of docstrings (sourced from the Rust \code{///} comments and served to
+  both IDE tooling and the Sphinx-built HTML guide at
+\url{https://jmg049.github.io/ruopus/}) ship in every wheel.
+
+\needspace{6\baselineskip}
+\subsection{Installation}\label{subsec:python_install}
+
+\begin{lstlisting}[language=bash]
+pip install ruopus
+\end{lstlisting}
+
+Pre-built wheels cover CPython 3.9 through 3.13 on Linux, macOS, and Windows;
+no Rust toolchain is required. NumPy 1.22+ is the only runtime dependency.
+Building from source (\code{maturin build --features python}) needs a
+\Q{1.85}+ Rust toolchain, matching the crate's MSRV.
+
+\needspace{8\baselineskip}
+\subsection{Quickstart: Encode and Decode}\label{subsec:python_quickstart}
+
+The encoder and decoder are both stateful classes; construct one of each per
+stream and feed them consecutive frames so cross-frame state (MDCT overlap,
+mode hysteresis, concealment history) stays continuous.
+
+\begin{lstlisting}[language=Python]
+import numpy as np
+import ruopus
+
+# Stereo encoder at 64 kbps (default: fullband, complexity 10, auto mode)
+enc = ruopus.OpusEncoder(2, bitrate=64_000)
+dec = ruopus.OpusDecoder(2)
+
+# 20 ms stereo frame at 48 kHz -> 960 samples per channel
+frame = np.zeros((960, 2), dtype=np.float32)
+
+packet = enc.encode_auto(frame)        # bytes: the encoded Opus packet
+pcm    = dec.decode_packet(packet)     # (960, 2) float32 in [-1, 1]
+\end{lstlisting}
+
+Encoder input accepts a 1-D interleaved array or a 2-D \code{(frames,
+channels)} array, both without extra copies. Mono streams use
+\code{channels=1}; decoded PCM is then \code{(frames, 1)}. For callers that
+need integer samples, \code{OpusDecoder}'s \code{decode\_packet\_i16} method
+returns \code{int16} PCM instead, scaled and rounded exactly as
+\code{opus\_demo} does.
+
+Every encoder property (\code{bitrate}, \code{complexity}, \code{dtx},
+  \code{bandwidth}, \code{signal}, \code{application}, \code{inband\_fec},
+\code{packet\_loss\_perc}, \code{vbr}, \code{force\_channels}) is writable at
+runtime and takes effect on the next frame -- there is no need to rebuild the
+encoder to change quality or bitrate mid-stream.
+
+\needspace{8\baselineskip}
+\subsection{Choosing a Codec Mode}\label{subsec:python_modes}
+
+\cref{sec:opus_layer} describes SILK, CELT, and hybrid mode at the bitstream
+level; the Python encoder exposes one method per mode plus an automatic
+dispatcher:
+
+\begin{lstlisting}[language=Python]
+enc.encode_auto(frame)     # per-frame SILK / hybrid / CELT decision
+enc.encode(frame)          # force CELT-only
+enc.encode_silk(frame)     # force SILK-only (speech, 10/20/40/60 ms)
+enc.encode_hybrid(frame)   # force hybrid (10/20 ms, SWB/FB only)
+\end{lstlisting}
+
+\code{encode\_auto} is the right default for most applications: it runs the
+encoder's signal analysis (\cref{subsec:encode_auto}) every frame and picks a
+mode from the \code{signal} hint, the \code{application} profile, the target
+bitrate, and cross-frame hysteresis. The \code{Signal} and \code{Application}
+enums bias that decision explicitly:
+
+\begin{lstlisting}[language=Python]
+# Phone-quality voice
+enc_voice = ruopus.OpusEncoder(
+    1, bitrate=8_000,
+    application=ruopus.Application.Voip,
+    signal=ruopus.Signal.Voice,
+)
+
+# High-quality music
+enc_music = ruopus.OpusEncoder(
+    2, bitrate=128_000,
+    application=ruopus.Application.Audio,
+    signal=ruopus.Signal.Music,
+)
+
+# Low-latency game voice (CELT only, never SILK)
+enc_ld = ruopus.OpusEncoder(
+    1, bitrate=32_000,
+    application=ruopus.Application.RestrictedLowDelay,
+)
+\end{lstlisting}
+
+After encoding, \code{ruopus.Packet(packet).toc} reports which mode,
+bandwidth, and frame size the encoder actually chose
+(\cref{subsec:python_packets}).
+
+\needspace{6\baselineskip}
+\subsection{Frame Sizes}\label{subsec:python_framesizes}
+
+Opus's six frame durations (\cref{tab:frame_sizes_py}) are always expressed in
+samples \emph{per channel} at 48~kHz, regardless of which mode encodes them.
+\code{FrameSize} carries both directions of that conversion:
+
+\begin{lstlisting}[language=Python]
+fs = ruopus.FrameSize.Ms20
+print(fs.tenth_ms, fs.samples_per_channel_48k)   # 200, 960
+\end{lstlisting}
+
+\begin{table}[h]
+  \centering
+  \begin{tabular}{lll}
+    \toprule
+    Duration & Samples @ 48 kHz & Modes \\
+    \midrule
+    2.5 ms & 120  & CELT only \\
+    5 ms   & 240  & CELT only \\
+    10 ms  & 480  & SILK, hybrid, CELT \\
+    20 ms  & 960  & SILK, hybrid, CELT \\
+    40 ms  & 1920 & SILK only \\
+    60 ms  & 2880 & SILK only \\
+    \bottomrule
+  \end{tabular}
+  \caption{Valid frame durations and the modes that accept each.}
+  \label{tab:frame_sizes_py}
+\end{table}
+
+20~ms is the only duration every mode accepts and the standard default.
+Passing a duration one of \code{encode}, \code{encode\_silk}, or
+\code{encode\_hybrid} does not support raises \code{EncodeError}.
+\code{enc.lookahead} reports the
+encoder's algorithmic delay in samples (120 for the default fullband CELT
+configuration, i.e.\ the MDCT overlap of \cref{subsec:mdct}) -- skip that many
+leading output samples when aligning a round-trip for testing.
+
+\needspace{8\baselineskip}
+\subsection{Ogg Opus Files}\label{subsec:python_ogg}
+
+\cref{sec:ogg} describes the Ogg container at the bitstream level;
+\code{encode\_ogg\_opus}/\code{decode\_ogg\_opus} handle the entire
+round-trip -- header, pages, pre-skip, output gain -- in one call each:
+
+\begin{lstlisting}[language=Python]
+import numpy as np
+import ruopus
+
+sr = 48_000
+t = np.linspace(0, 3, sr * 3, dtype=np.float32)
+pcm = np.column_stack([
+    np.sin(2 * np.pi * 440 * t),   # left:  A4
+    np.sin(2 * np.pi * 880 * t),   # right: A5
+])
+
+ogg = ruopus.encode_ogg_opus(pcm, channels=2, bitrate=128_000)
+with open("output.opus", "wb") as f:
+    f.write(ogg)
+
+with open("output.opus", "rb") as f:
+    decoded_pcm, head = ruopus.decode_ogg_opus(f.read())
+
+print(f"{head.channel_count}-ch, {decoded_pcm.shape[0] / sr:.2f}s")
+\end{lstlisting}
+
+Decoding applies the \code{OpusHead} pre-skip (\cref{subsec:granule}), trims
+trailing granule padding, and applies the header's Q7.8 output gain, so the
+returned PCM is ready to play or save as-is. \code{OpusHead} exposes every
+identification-header field (\code{version}, \code{channel\_count},
+  \code{pre\_skip}, \code{input\_sample\_rate}, \code{output\_gain\_q8}, and the
+channel-mapping fields for non-family-0 streams) and round-trips back to bytes
+via \code{to\_bytes()}. Only channel-mapping family 0 (mono/stereo) is
+supported by \code{decode\_ogg\_opus}; surround files need the multistream
+decoder (\cref{subsec:python_multistream}).
+
+\needspace{8\baselineskip}
+\subsection{Packet Loss and Forward Error Correction}\label{subsec:python_fec}
+
+\cref{subsec:plc,subsec:fec} describe concealment and in-band FEC at the
+bitstream level. The decoder exposes both directly:
+
+\begin{lstlisting}[language=Python]
+import ruopus
+
+dec = ruopus.OpusDecoder(2)
+FRAME = 960  # 20 ms at 48 kHz
+
+for pkt in stream:
+    if pkt is None:
+        pcm = dec.decode_lost(frame_size=FRAME)        # concealment
+    else:
+        pcm = dec.decode_packet(pkt)
+
+# Recover a lost packet from in-band FEC carried by its successor
+recovered = dec.decode_fec(next_pkt, frame_size=FRAME)
+\end{lstlisting}
+
+\code{decode\_lost} extrapolates the last pitch period after a CELT/hybrid
+packet; a lost frame following SILK fades to silence (SILK's own PLC is not
+yet ported -- \cref{subsec:silk_plc}). \code{decode\_fec} recovers a lost
+frame from the low-bitrate redundant (LBRR) copy the \emph{next} packet
+carries, falling back to plain concealment when no usable FEC data is
+present. Enable FEC generation on the encoder with two properties:
+
+\begin{lstlisting}[language=Python]
+enc = ruopus.OpusEncoder(
+    1, bitrate=24_000,
+    application=ruopus.Application.Voip,
+    signal=ruopus.Signal.Voice,
+    inband_fec=True,
+    packet_loss_perc=10,   # hint: expect 10% loss
+)
+\end{lstlisting}
+
+\code{packet\_loss\_perc} (clamped 0--100) biases the encoder toward
+loss-robust coding -- more redundancy at the cost of raw efficiency -- and is
+only effective on SILK/hybrid packets, so it has no effect under
+\code{Application.RestrictedLowDelay}.
+
+\needspace{8\baselineskip}
+\subsection{Multistream and Surround Decoding}\label{subsec:python_multistream}
+
+\cref{sec:multistream} describes multistream demultiplexing at the bitstream
+level. \code{MultistreamDecoder} decodes \code{streams} elementary Opus
+streams per packet (the first \code{coupled} as stereo, the rest mono) and
+routes the resulting channels to an output layout via \code{mapping}, where
+the sentinel \code{255} produces a silent channel:
+
+\begin{lstlisting}[language=Python]
+import ruopus
+
+# 5.1 surround: 4 elementary streams, 2 stereo-coupled
+dec = ruopus.MultistreamDecoder(
+    streams=4,
+    coupled=2,
+    mapping=[0, 4, 1, 2, 3, 5],   # L R C LFE Ls Rs
+)
+pcm = dec.decode_packet(raw_packet)   # (frames, 6) float32
+\end{lstlisting}
+
+Each packet's elementary streams are self-delimited (\cref{subsec:self_delimit})
+except the last, which is standard-framed; \code{decode\_packet} handles that
+transparently. Mono/stereo Ogg files (channel-mapping family 0) never use
+multistream framing, so \code{decode\_ogg\_opus} handles them without this
+class.
+
+\needspace{8\baselineskip}
+\subsection{Packet Introspection}\label{subsec:python_packets}
+
+\code{Toc} and \code{Packet} parse Opus framing (\cref{sec:packet}) without
+decoding audio -- useful for logging, monitoring, or building test vectors:
+
+\begin{lstlisting}[language=Python]
+import ruopus
+
+pkt = ruopus.Packet(raw_bytes)
+print(f"mode={pkt.toc.mode}, bandwidth={pkt.toc.bandwidth}, frames={len(pkt)}")
+
+for frame in pkt.frames:      # each a `bytes` object; may be empty (DTX)
+    ...
+first_frame = pkt[0]           # Packet is a read-only sequence of frames
+\end{lstlisting}
+
+\code{Toc} exposes the raw byte plus its three decoded fields (\code{mode},
+  \code{bandwidth}, \code{frame\_size}, \code{channels}, \code{stereo},
+\code{config}, \code{frame\_count\_code}) and is hashable, so TOC
+distributions across a stream can be tallied with a \code{Counter}.
+\code{Packet.parse} validates the R1--R7 framing rules
+(\cref{subsec:validity}) and raises \code{PacketError} on a malformed packet;
+\code{Packet.parse\_self\_delimited} parses the self-delimiting form used
+inside multistream payloads and returns the bytes consumed alongside the
+packet. After a round-trip, comparing \code{enc.final\_range} against
+\code{dec.final\_range} (\cref{subsec:oracle}) is the same bit-exactness
+oracle used by the Rust conformance suite.
+
+\needspace{8\baselineskip}
+\subsection{The Low-Level API}\label{subsec:python_lowlevel}
+
+\code{ruopus.lowlevel} exposes the SILK and CELT layers of
+\cref{sec:celt,sec:silk} directly, below the Opus packet format, plus the LPC
+analysis/synthesis pipeline underlying SILK. These are research and
+custom-codec building blocks; ordinary use should prefer
+\code{OpusEncoder}/\code{OpusDecoder}.
+
+\begin{lstlisting}[language=Python]
+import numpy as np
+import ruopus.lowlevel as ll
+
+# The CELT layer alone: raw frame bodies, no TOC, no Opus framing
+enc = ll.CeltEncoder(channels=1, complexity=10, bitrate=64_000)
+frame = np.zeros(960, dtype=np.float32)
+body = enc.encode(frame)              # raw CELT frame body
+
+# SILK operates at its own internal rate (8/12/16 kHz), not 48 kHz,
+# and on int16 PCM
+silk_enc = ll.SilkEncoder(fs_khz=16, nb_subfr=4, bitrate=25_000)
+payload = silk_enc.encode(np.zeros(320, dtype=np.int16))  # 20 ms @ 16 kHz
+
+# The LPC analysis pipeline that drives SILK's short-term prediction
+signal = np.random.randn(320).astype(np.float32)
+coeffs = ll.lpc_analysis(signal, order=16)                # Levinson-Durbin
+residual = ll.lpc_residual_stateful(signal, coeffs)
+lag = ll.estimate_pitch(signal, fs_khz=16)                 # long-term prediction
+\end{lstlisting}
+
+\code{SilkStereoEncoder} extends \code{SilkEncoder} with mid-side coding
+(\cref{subsec:silk_stereo}); \code{DecControl} carries the SILK decoder's
+per-frame control parameters. \code{CeltDecoder} does not expose a full
+\code{decode} method, since CELT decoding needs the encoder's live
+range-coder state (\cref{subsec:oracle}), which crosses no API boundary --
+real CELT packets decode through \code{OpusDecoder} instead; the low-level
+decoder covers concealment (\code{decode\_lost}) independently.
+
+\needspace{6\baselineskip}
+\subsection{Complete API Reference}\label{subsec:python_api_ref}
+
+\begin{table}[h]
+  \centering
+  \begin{tabular}{ll}
+    \toprule
+    Name & Purpose \\
+    \midrule
+    \code{OpusEncoder} / \code{OpusDecoder} & Top-level Opus packet
+    codec (\cref{subsec:python_quickstart}) \\
+    \code{MultistreamDecoder} & Surround/multistream decode
+    (\cref{subsec:python_multistream}) \\
+    \code{Packet} / \code{Toc} & Packet and TOC introspection
+    (\cref{subsec:python_packets}) \\
+    \code{OpusHead} & Ogg Opus identification header
+    (\cref{subsec:python_ogg}) \\
+    \code{encode\_ogg\_opus} / \code{decode\_ogg\_opus} & Whole-file
+    Ogg Opus helpers (\cref{subsec:python_ogg}) \\
+    \code{Mode}, \code{Bandwidth}, \code{FrameSize} & Packet-level
+    enums (\cref{sec:packet}) \\
+    \code{Signal}, \code{Application} & Encoder mode/latency hints
+    (\cref{subsec:python_modes}) \\
+    \code{OpusError} & Base exception for every codec failure \\
+    \code{PacketError}, \code{EncodeError}, \code{OggError} &
+    Specific exception subclasses \\
+    \code{ruopus.lowlevel} & SILK/CELT/LPC primitives
+    (\cref{subsec:python_lowlevel}) \\
+    \code{ruopus.version()} & The installed \texttt{ruopus} version string \\
+    \bottomrule
+  \end{tabular}
+  \caption{The top-level \texttt{ruopus} Python surface. Every class and
+    function carries a full docstring and type stub; run \code{help(ruopus.X)}
+    or consult \url{https://jmg049.github.io/ruopus/} for exhaustive
+  parameter-level documentation.}
+  \label{tab:python_api_ref}
+\end{table}
 
 \begin{importantnote}
-  This chapter is a placeholder. The bindings (a \texttt{PyO3} extension module
-    mirroring the Rust \code{OpusEncoder}/\code{OpusDecoder} surface, with NumPy
-  buffer-protocol interop for PCM) are under construction. Until they ship, use
-  the Rust API documented in \cref{sec:opus_layer} directly, or call the C
-  reference \texttt{libopus} through an existing binding. The remainder of this
-  section is intentionally left blank and will be filled in alongside the
-  first binding release.
+  This reference is deliberately a map, not the territory: exhaustive
+  parameter documentation lives in the generated \code{.pyi} stubs (so IDEs
+  show it inline) and the Sphinx guide. Anywhere this section and the
+  installed package disagree, the package is correct -- file an issue against
+  the manual.
 \end{importantnote}
-
-\needspace{6\baselineskip}
-\subsection*{Installation and Imports}
-
-% TODO(python): pip install ruopus; import ruopus as opus
-
-\needspace{6\baselineskip}
-\subsection*{Decoding}
-
-% TODO(python): OpusDecoder(channels, sample_rate); decode_packet -> ndarray;
-% decode_ogg_opus(bytes) -> (ndarray, OpusHead)
-
-\needspace{6\baselineskip}
-\subsection*{Encoding}
-
-% TODO(python): OpusEncoder(channels, sample_rate); set_bitrate /
-% set_bandwidth /
-% set_dtx; encode_auto(pcm) -> bytes; encode_ogg_opus(pcm, channels, bitrate)
-
-\needspace{6\baselineskip}
-\subsection*{Streaming and Files}
-
-% TODO(python): OggOpusReader / OggOpusWriter; frame-by-frame streaming;
-% packet loss / FEC / DTX worked examples
-
-\needspace{6\baselineskip}
-\subsection*{Complete API Reference}
-
-% TODO(python): exhaustive class/function reference, mirroring the structure of
-% sec:opus_layer once the binding surface is frozen.

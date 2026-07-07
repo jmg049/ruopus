@@ -34,7 +34,9 @@ receiver that is not told in advance which mode each packet uses.
 \subsection{The Reference Implementation}\label{subsec:reference_impl}
 
 Throughout, the implementation under discussion is
-\texttt{opus\_native}, a pure-Rust, dependency-free realization of RFC 6716.
+\texttt{ruopus}, a pure-Rust realization of RFC 6716 with zero \emph{required}
+runtime dependencies (the default build pulls in one optional FFT crate for
+faster decoding; \code{default-features = false} is fully dependency-free).
 Every code listing in this manual is drawn from that source. Three of its design
 choices shape the discussion:
 
@@ -237,16 +239,24 @@ To decode one Opus packet, the decoder performs the following steps:
     transitions and redundancy (\cref{sec:opus_layer}).
 \end{enumerate}
 
-The top-level dispatch is a compact \code{match} on the parsed TOC:
+The entry point parses the packet and hands it to a per-frame driver, itself a
+long chain of mode- and bandwidth-conditioned branches rather than one tidy
+dispatch, since transitions and hybrid redundancy each need their own
+handling:
 
 \begin{lstlisting}[language=Rust]
 pub fn decode_packet(&mut self, data: &[u8]) -> Result<Vec<f32>, PacketError> {
+    // Empty or TOC-only packet: conceal one frame (DTX / loss).
     if data.len() <= 1 {
-        // Empty or TOC-only packet: conceal one frame (DTX / loss).
         return Ok(self.decode_lost(self.last_frame_size / self.ds));
     }
     let packet = Packet::parse(data)?;
+    Ok(self.decode_parsed(&packet))
+}
+
+fn decode_parsed(&mut self, packet: &Packet) -> Vec<f32> {
     let toc = packet.toc();
+    self.stream_channels = usize::from(toc.channels());
     let mut out = Vec::new();
     for frame in packet.frames() {
         let pcm = self.decode_frame(
@@ -255,7 +265,7 @@ pub fn decode_packet(&mut self, data: &[u8]) -> Result<Vec<f32>, PacketError> {
         );
         out.extend_from_slice(&pcm);
     }
-    Ok(out)
+    out
 }
 \end{lstlisting}
 
@@ -598,6 +608,7 @@ pub fn decode_raw_bits(&mut self, bits: u32) -> u32 {
     let ret = self.end_window & ((1 << bits) - 1);    // LSB-first
     self.end_window >>= bits;
     self.nend_bits  -= bits;
+    self.nbits_total += bits;                         // tell()/tell_frac() count these too
     ret
 }
 \end{lstlisting}
@@ -674,7 +685,7 @@ implementation, described below.
   This is a strong check. The entire decode (thousands of symbols across SILK
   and CELT, every table lookup, every renormalization) collapses into a single
   32-bit number that is wrong if \emph{any} step diverged. The
-  \texttt{opus\_native} conformance suite enforces it on all twelve official
+  \texttt{ruopus} conformance suite enforces it on all twelve official
   vectors: a passing decode is not merely close to the reference, it is
   arithmetically identical through the entropy coder. The PCM may differ by a
   rounding bit in the final float MDCT; the \emph{range} may not differ at all.
@@ -850,30 +861,31 @@ the payload equally, and a payload not divisible by $M$ is an error.
 RFC 6716 \S3.4 enumerates seven conditions, labeled [R1] through [R7], that a
 well-formed packet must satisfy. They exist because a decoder fed hostile or
 corrupt input must reject it cleanly rather than read out of bounds or allocate
-unboundedly. The implementation maps each rule to a typed error
-(\cref{tab:rules}).
+unboundedly. The implementation's error type documents which rule(s) each
+variant enforces (\cref{tab:rules}); several rules share an error because they
+are checked by the same code path, and R4/R6/R7 each contribute to more than
+one variant.
 
 \begin{table}[h]
   \centering
-  \begin{tabular}{lll}
+  \begin{tabularx}{\textwidth}{lcX}
     \toprule
-    \textbf{Rule} & \textbf{Condition} & \textbf{Error} \\
+    \textbf{Error} & \textbf{Rule(s)} & \textbf{Condition} \\
     \midrule
-    R1 & packet is at least one byte (has a TOC)       & \code{Empty} \\
-    R2 & every frame is at most 1275 bytes             & \code{FrameTooLarge} \\
-    R3 & code 1 payload length is even                 &
-    \code{Code1UnevenPayload} \\
-    R4 & coded frame lengths are not truncated         &
-    \code{InvalidFrameLength} \\
-    R5 & code 3 count $M\ge 1$ and total $\le$ 120~ms  &
-    \code{InvalidFrameCount} \\
-    R6 & padding does not exceed the payload           &
-    \code{InvalidPadding} \\
-    R7 & frame lengths do not overrun the payload      &
-    \code{InvalidFrameLength} \\
+    \code{Empty} & R1 & packet is at least one byte (has a TOC) \\
+    \code{FrameTooLarge} & R2 & every frame is at most 1275 bytes \\
+    \code{Code1UnevenPayload} & R3 & code 1 payload length is even \\
+    \code{InvalidFrameLength} & R4, R7 & a coded frame length is truncated or
+    overruns the payload \\
+    \code{InvalidFrameCount} & R5 & code 3 count $M\ge 1$ and total $\le$
+    120~ms \\
+    \code{InvalidPadding} & R6, R7 & padding overruns the payload \\
+    \code{CbrPayloadNotDivisible} & R6 & a CBR (code 2/3, non-VBR) payload
+    does not divide evenly by the frame count \\
     \bottomrule
-  \end{tabular}
-  \caption{The malformed-packet rules [R1]--[R7] (\S3.4) and their errors.}
+  \end{tabularx}
+  \caption{The malformed-packet rules [R1]--[R7] (\S3.4) and the typed errors
+  that enforce them.}
   \label{tab:rules}
 \end{table}
 
@@ -881,12 +893,13 @@ unboundedly. The implementation maps each rule to a typed error
   Rules R5 and R6 are the codec's defense against denial-of-service input. R5
   caps a packet at 120~ms of audio, so a single packet cannot demand an
   unbounded decode; the implementation checks $M \times \text{(tenths of ms per
-  frame)} \le 1200$. R6 ensures the padding count, which is attacker-controlled,
-  cannot point past the end of the buffer. Differential fuzzing against the
-  reference (over a million iterations) found two arithmetic-underflow bugs in
-  earlier versions of the surrounding code, both since fixed by matching the
-  reference's signed semantics; the packet rules are the first line that stops
-  such input from reaching the signal-processing layers at all.
+  frame)} \le 1200$. R6 ensures the padding count and the CBR frame division,
+  both attacker-controlled, cannot point past the end of the buffer or hide a
+  malformed split. The packet rules are the first line that stops such input
+  from reaching the signal-processing layers at all; the decoder is also
+  exercised by differential fuzzing against the reference implementation
+  (\cref{subsec:conformance}) to catch the arithmetic edge cases the rules
+  alone do not.
 \end{importantnote}
 
 \section{CELT: Transform Coding}\label{sec:celt}
@@ -1159,29 +1172,34 @@ replacement and signs, \S4.3.4.2).
 \end{concept}
 
 Computing $U$ from \cref{eq:cwrs_u} on every band decode would cost $O(NK)$. The
-implementation instead precomputes the $U$ rows into a flat table once, so
-ranking and unranking a codeword become $O(N)$ table lookups. The table is small
-(a few hundred entries, generated on first use) and exploits the symmetry
-$U(n,k)=U(k,n)$ to stay compact:
+implementation instead precomputes the $U$ rows into a flat table, so ranking
+and unranking a codeword become $O(N)$ table lookups. The table has a little
+over a thousand entries (1272 \code{u32}s) and exploits the symmetry
+$U(n,k)=U(k,n)$ to stay compact. It is built by a \code{const fn} evaluated at
+compile time, so the table is baked into the binary with no runtime
+initialization and no allocator dependency (load-bearing for the
+\code{no\_std} decoder core, \cref{sec:optimizations}):
 
 \begin{lstlisting}[language=Rust]
-// Build the U-table once: each entry is the recurrence of Eq. (cwrs_u).
-fn pvq_u_data() -> &'static [u32] {
-    static T: OnceLock<Vec<u32>> = OnceLock::new();
-    T.get_or_init(|| {
-        let mut uu = [[0u32; 177]; 15];
-        uu[0][0] = 1;
-        for a in 1..15 {
-            for b in 1..177 {
-                uu[a][b] = uu[a - 1][b]
-                    .wrapping_add(uu[a][b - 1])
-                    .wrapping_add(uu[a - 1][b - 1]);
-            }
+// Row m's data starts at column m; PVQ_U_ROW[15] is the total length.
+const fn compute_pvq_u_data() -> [u32; PVQ_U_DATA_LEN] {
+    let mut uu = [[0u32; 177]; 15];   // U(a, b) for a <= 14, b <= 176
+    uu[0][0] = 1;
+    let mut a = 1;
+    while a < 15 {
+        let mut b = 1;
+        while b < 177 {
+            uu[a][b] = uu[a - 1][b].wrapping_add(uu[a][b - 1]).wrapping_add(uu[a - 1][b - 1]);
+            b += 1;
         }
-        /* flatten into a row-offset table */
-        flatten(uu)
-    })
+        a += 1;
+    }
+    let mut d = [0u32; PVQ_U_DATA_LEN];
+    // ... pack row m of `uu` into d[PVQ_U_ROW[m]..], starting at column m ...
+    d
 }
+
+static PVQ_U_DATA: [u32; PVQ_U_DATA_LEN] = compute_pvq_u_data();
 \end{lstlisting}
 
 The decoder reads the uniform index from the range coder, unranks it to recover
@@ -1452,19 +1470,38 @@ The short-term predictor of \cref{eq:lpc_predict} is a $p$-tap linear filter
 ($p=10$ for narrowband and mediumband, $p=16$ for wideband). It comes in two
 forms that are exact inverses: the \termdef{analysis} filter $A(z)$, which the
 encoder applies to produce the residual, and the \termdef{synthesis} filter
-$1/A(z)$, which the decoder applies to reconstruct the signal.
+$1/A(z)$, which the decoder applies to reconstruct the signal. The
+implementation runs this in \Q{12} fixed-point on \code{i16} coefficients and
+samples (SILK's convention predicts with a \emph{plus} sign, so the analysis
+  filter subtracts the prediction from the input rather than adding it, unlike
+\cref{eq:lpc_predict}'s $A(z)$ sign). The taps are reversed once up front so
+the per-sample dot product is a bounds-check-free forward window:
 
 \begin{lstlisting}[language=Rust]
-// Analysis: e[n] = x[n] + sum_k a_k x[n-1-k]  (apply A(z))
-pub fn lpc_residual(samples: &[f32], coeffs: &LpcCoefficients) -> Vec<f32> {
-    /* residual[n] = samples[n] + sum coeffs[k] * samples[n-1-k] */
-}
-
-// Synthesis: y[n] = e[n] - sum_k a_k y[n-1-k]  (apply 1/A(z))
-pub fn lpc_synthesis(residual: &[f32], coeffs: &LpcCoefficients) -> Vec<f32> {
-    /* output[n] = residual[n] - sum coeffs[k] * output[n-1-k] */
+// MA whitening filter (Q12 taps); the first `order` outputs are zeroed.
+pub(crate) fn lpc_analysis_filter(out: &mut [i16], input: &[i16], b: &[i16]) {
+    let d = b.len();
+    let mut b_rev = [0i16; 16];
+    for (j, &tap) in b.iter().enumerate() {
+        b_rev[d - 1 - j] = tap;
+    }
+    for ix in d..input.len() {
+        let win = &input[ix - d..ix];
+        let mut pred_q12 = 0i32;
+        for (&w, &tap) in win.iter().zip(b_rev[..d].iter()) {
+            pred_q12 = smlabb(pred_q12, i32::from(w), i32::from(tap));
+        }
+        let e_q12 = (i32::from(input[ix]) << 12) - pred_q12;   // e[n] = x[n] - pred
+        out[ix] = rshift_round(e_q12, 12).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+    }
+    out[..d].fill(0);
 }
 \end{lstlisting}
+
+The synthesis filter run by the decoder is the same recurrence with the sign
+and the roles of input/output swapped: it accumulates the prediction from
+\emph{already-reconstructed} output samples and adds it back to the incoming
+residual, so past decisions feed forward exactly as they did during encoding.
 
 \subsubsection{Estimating the coefficients}
 
@@ -1636,14 +1673,22 @@ piecewise-parabolic $\log_2$-to-linear approximation:
 \begin{lstlisting}[language=Rust]
 for k in 0..nb_subfr {
     if k == 0 && !conditional {
+        // The index may not drop more than 16 steps (~21.8 dB).
         *prev_ind = i32::from(ind[k]).max(i32::from(*prev_ind) - 16) as i8;
     } else {
         let ind_tmp = i32::from(ind[k]) + MIN_DELTA_GAIN_QUANT;   // delta-coded
-        /* expand the step beyond a threshold for fast gain changes */
-        *prev_ind = update_with_double_step(*prev_ind, ind_tmp);
+        // Accumulate deltas, with a wider double step above a threshold.
+        let double_step_threshold =
+            2 * MAX_DELTA_GAIN_QUANT - N_LEVELS_QGAIN + i32::from(*prev_ind);
+        *prev_ind = if ind_tmp > double_step_threshold {
+            i32::from(*prev_ind) + ((ind_tmp << 1) - double_step_threshold)
+        } else {
+            i32::from(*prev_ind) + ind_tmp
+        } as i8;
     }
-    *prev_ind = (*prev_ind).clamp(0, N_LEVELS_QGAIN - 1) as i8;
-    gain_q16[k] = log2lin(/* index mapped into log domain */);  // back to linear
+    *prev_ind = i32::from(*prev_ind).clamp(0, N_LEVELS_QGAIN - 1) as i8;
+    // Scale into the log domain and back to linear Q16.
+    gain_q16[k] = log2lin((smulwb(INV_SCALE_Q16, i32::from(*prev_ind)) + OFFSET).min(3967));
 }
 \end{lstlisting}
 
@@ -1723,12 +1768,25 @@ bit-identically to the reference, so the encoder's reconstruction matches the
 decoder's to the sample:
 
 \begin{lstlisting}[language=Rust]
-// Short-term prediction: a fixed-point dot product, Q10, matching SMLAWB chains.
+// The LPC prediction (Q10). `coef_rev` is reversed once per subframe so this
+// descending-history access becomes a forward windowed dot with no bounds
+// checks in the per-sample loop.
 fn short_prediction(buf: &[i32], base: usize, coef_rev: &[i16]) -> i32 {
     let order = coef_rev.len();
-    crate::simd::dot_smlawb_q16((order >> 1) as i32, &buf[base + 1 - order..=base], coef_rev)
+    let w = &buf[base + 1 - order..=base];
+    let mut out = (order >> 1) as i32;
+    for (&wj, &cj) in w.iter().zip(coef_rev.iter()) {
+        out = smlawb(out, wj, i32::from(cj));   // scalar SMLAWB chain
+    }
+    out
 }
 \end{lstlisting}
+
+This one is deliberately scalar rather than routed through the SIMD dot
+products of \cref{subsec:simd_dot}: it runs once per sample over at most 16
+taps, and a SIMD call's fixed overhead (the call itself, and folding the
+lanes back to a scalar) does not amortize over so few taps. The scalar/SIMD
+line is drawn per call site by measured cost, not by a blanket rule.
 
 \subsubsection{Noise-shaping analysis}
 
@@ -2344,8 +2402,9 @@ two implementations selected at build time.
 
 Two further optimizations are algorithmic rather than architectural. The CWRS
 enumeration (\cref{subsec:cwrs}) replaces the $O(NK)$ recurrence with $O(N)$
-lookups into a precomputed table built once on first use, which is significant
-because band decoding calls it on every band of every frame. And throughout the
+lookups into a table computed once at compile time (a \code{const fn} baked
+into the binary, not a runtime lazy-init), which is significant because band
+decoding calls it on every band of every frame. And throughout the
 hot paths, per-call heap allocation is eliminated by reusing
 thread-local scratch
 buffers: the band-encode work vectors, the MDCT complex scratch, and the cached

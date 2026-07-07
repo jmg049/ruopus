@@ -44,14 +44,15 @@ ruopus = "0.1"
 ```rust
 use ruopus::{OpusDecoder, OpusEncoder};
 
-// Decode Opus packets to interleaved f32 PCM.
-let mut dec = OpusDecoder::new(2); // channels
-let pcm = dec.decode_packet(&packet)?;
-
 // Encode 48 kHz PCM (one 20 ms frame is 960 samples per channel, interleaved).
-let mut enc = OpusEncoder::new(1);
+let mut enc = OpusEncoder::new(1); // channels
 enc.set_bitrate(Some(24_000));
-let packet = enc.encode_auto(&pcm_960, 4000)?;
+let pcm_960 = vec![0.0f32; 960];
+let packet = enc.encode_auto(&pcm_960, 1275)?; // max_bytes: 3..=1275
+
+// Decode Opus packets to interleaved f32 PCM.
+let mut dec = OpusDecoder::new(1); // channels, must match the encoder
+let pcm = dec.decode_packet(&packet)?;
 ```
 
 ```rust
@@ -103,7 +104,7 @@ std`. Figures are x realtime; "ratio" is ruopus divided by libopus.
 Speech decode (SILK, hybrid) is faster than SIMD libopus. CELT trails on the
 MDCT, where libopus's SIMD wins.
 
-**Encode** (matched complexity)
+**Encode** (matched complexity: both at complexity 0)
 
 | Mode | ruopus | libopus | ratio |
 |------|-------------|---------|-------|
@@ -111,9 +112,19 @@ MDCT, where libopus's SIMD wins.
 | hybrid fullband 32 kb/s | 560x | 562x | 1.00x |
 | CELT fullband 64 kb/s | 1088x | 1092x | 1.00x |
 
-At matched complexity, encode is at parity with libopus across all modes.
-Against libopus at its default complexity it runs 1.6 to 3.2x faster (it does
-not yet spend cycles on delayed-decision NSQ or warped noise shaping).
+At matched complexity, encode is at parity with libopus across all modes (it
+does not yet spend cycles on delayed-decision NSQ or warped noise shaping,
+which is most of the remaining gap at higher complexity settings). libopus's
+default complexity is 10; ruopus has no complexity-dependent slowdown, so at
+libopus's default it pulls ahead:
+
+**Encode** (ruopus vs. libopus at libopus's default complexity 10)
+
+| Mode | ruopus | libopus | ratio |
+|------|-------------|---------|-------|
+| SILK wideband 16 kb/s | 703x | 221x | 3.18x |
+| hybrid fullband 32 kb/s | 424x | 193x | 2.20x |
+| CELT fullband 64 kb/s | 693x | 432x | 1.60x |
 
 ## Conformance
 
